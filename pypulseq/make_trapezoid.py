@@ -4,6 +4,35 @@ import numpy as np
 
 from pypulseq.opts import Opts
 
+def calculate_shortest_params_for_area(area, max_slew, max_grad, grad_raster_time):
+    rise_time = (
+        np.ceil(np.sqrt(np.abs(area) / max_slew) / grad_raster_time)
+        * grad_raster_time
+    )
+    if rise_time < grad_raster_time:  # Area was almost 0 maybe
+        rise_time = grad_raster_time
+    amplitude = np.divide(area, rise_time)  # To handle nan
+    t_eff = rise_time
+
+    if np.abs(amplitude) > max_grad:
+        t_eff = (
+            np.ceil(np.abs(area) / max_grad / grad_raster_time)
+            * grad_raster_time
+        )
+        amplitude = area / t_eff
+        rise_time = (
+            np.ceil(np.abs(amplitude) / max_slew / grad_raster_time)
+            * grad_raster_time
+        )
+
+        if rise_time == 0:
+            rise_time = grad_raster_time
+
+    flat_time = t_eff - rise_time
+    fall_time = rise_time
+    
+    return amplitude, rise_time, flat_time, fall_time
+
 
 def make_trapezoid(
     channel: str,
@@ -116,41 +145,17 @@ def make_trapezoid(
     elif duration > 0:
         if amplitude == 0:
             if rise_time == 0:
-                duration = np.ceil(duration / system.grad_raster_time)*system.grad_raster_time
-                # dC = 1 / np.abs(2 * max_slew) + 1 / np.abs(2 * max_slew)
-                # possible = duration**2 > 4 * np.abs(area) * dC
-                
-                # Rampup time to max_grad
-                min_ramp = np.ceil((system.max_grad/system.max_slew) / system.grad_raster_time)*system.grad_raster_time
-                if abs(area) > system.max_grad * min_ramp:
-                    # Not achievable with triangle
-                    min_dur = abs(area) / system.max_grad + np.ceil(system.max_grad/system.max_slew / system.grad_raster_time)*system.grad_raster_time
-                else:
-                    min_dur = 2 * np.sqrt(abs(area) * system.max_slew) / system.max_slew
-                    
-                # TODO: min_dur should adjust both flat time and rise time to raster, not just total duration
-                min_dur = np.ceil(min_dur / system.grad_raster_time)*system.grad_raster_time
-
-                # d = round_to_grad_raster(ramp) + a/x
-
-                possible = duration >= min_dur
-
-                assert possible, (
+                _, rise_time, flat_time, fall_time = calculate_shortest_params_for_area(area, max_slew, max_grad, system.grad_raster_time)
+                min_duration = rise_time + flat_time + fall_time
+                assert duration >= min_duration, (
                     f"Requested area is too large for this gradient. Minimum required duration is "
-                    # f"{np.round(np.sqrt(4 * np.abs(area) * dC) * 1e6)} uss"
-                    f"{np.round(min_dur * 1e6)} uss"
+                    f"{np.round(min_duration * 1e6)} uss"
                 )
                 
-                d = system.max_slew * (duration**2 * system.max_slew - 4 * abs(area))
-                if d < 0:
-                    print('Warning: negative discriminant?')
-                d = max(d,0)
-                amplitude2 = 1/2 * (duration * system.max_slew - np.sqrt(d))
-                # Other solution provides minimum slew rate solution?
-                # amplitude2 = 1/2 * (duration * system.max_slew + np.sqrt(d))
-                # amplitude2 = (
-                #     duration - np.sqrt(duration**2 - 4 * np.abs(area) * dC)
-                # ) / (2 * dC)
+                dC = 1 / np.abs(2 * max_slew) + 1 / np.abs(2 * max_slew)
+                amplitude2 = (
+                    duration - np.sqrt(duration**2 - 4 * np.abs(area) * dC)
+                ) / (2 * dC)
             else:
                 if fall_time == 0:
                     fall_time = rise_time
@@ -184,33 +189,9 @@ def make_trapezoid(
         if area == None:
             raise ValueError("Must supply area or duration.")
         else:
-            # Find the shortest possible duration. First check if the area can be realized as a triangle.
-            # If not, then it must be a trapezoid.
-            rise_time = (
-                np.ceil(np.sqrt(np.abs(area) / max_slew) / system.grad_raster_time)
-                * system.grad_raster_time
-            )
-            if rise_time < system.grad_raster_time:  # Area was almost 0 maybe
-                rise_time = system.grad_raster_time
-            amplitude2 = np.divide(area, rise_time)  # To handle nan
-            t_eff = rise_time
+            # Find the shortest possible duration.           
+            amplitude2, rise_time, flat_time, fall_time = calculate_shortest_params_for_area(area, max_slew, max_grad, system.grad_raster_time)
 
-            if np.abs(amplitude2) > max_grad:
-                t_eff = (
-                    np.ceil(np.abs(area) / max_grad / system.grad_raster_time)
-                    * system.grad_raster_time
-                )
-                amplitude2 = area / t_eff
-                rise_time = (
-                    np.ceil(np.abs(amplitude2) / max_slew / system.grad_raster_time)
-                    * system.grad_raster_time
-                )
-
-                if rise_time == 0:
-                    rise_time = system.grad_raster_time
-
-            flat_time = t_eff - rise_time
-            fall_time = rise_time
 
     if np.abs(amplitude2) > max_grad:
         raise ValueError(f"Amplitude violation: {np.abs(amplitude2)} > {max_grad}")

@@ -37,13 +37,7 @@ def add_gradients(
     -------
     grad : SimpleNamespace
         Superimposition of gradient events from `grads`.
-    """
-    if len(grads) == 0:
-        raise ValueError("Gradient list is empty")
-    if len(grads) == 1:
-        # TODO: Technically this should copy the gradient
-        return grads[0]
-    
+    """    
     # copy() to emulate pass-by-value; otherwise passed grad events are modified
     # grads = deepcopy(grads)
 
@@ -52,8 +46,12 @@ def add_gradients(
     if max_slew <= 0:
         max_slew = system.max_slew
 
-
-
+    if len(grads) == 0:
+        raise ValueError("No gradients specified")
+    if len(grads) == 1:
+        # TODO: Technically this should copy the gradient
+        return grads[0]
+    
     # First gradient defines channel
     channel = grads[0].channel
 
@@ -126,13 +124,14 @@ def add_gradients(
 
         times = np.sort(np.unique(times))
         dt = times[1:] - times[:-1]
-        ieps = np.where(dt < eps)[0]
+
+        ieps = np.flatnonzero(dt < eps)
         if np.any(ieps):
             dtx = np.array([times[0], *dt])
             dtx[ieps] = (
                 dtx[ieps] + dtx[ieps + 1]
             )  # Assumes that no more than two too similar values can occur
-            dtx = np.delete(dtx, ieps+1)
+            dtx = np.delete(dtx, ieps + 1)
             times = np.cumsum(dtx)
 
         amplitudes = np.zeros_like(times)

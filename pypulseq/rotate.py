@@ -101,17 +101,11 @@ def rotate(
 
     # Add gradients on the corresponding axis together
     g = []
-    if len(rotated1) > 1:
+    if len(rotated1) != 0:
         g.append(add_gradients(grads=rotated1, system=system))
-    else:
-        if len(rotated1) != 0:
-            g.append(rotated1[0])
 
-    if len(rotated2) > 1:
+    if len(rotated2) != 0:
         g.append(add_gradients(grads=rotated2, system=system))
-    else:
-        if len(rotated2) != 0:
-            g.append(rotated2[0])
 
     # Eliminate zero amplitude gradients
     for i in range(len(g) - 1, -1, -1):
