@@ -7,6 +7,7 @@ import numpy as np
 from pypulseq import eps
 from pypulseq.calc_duration import calc_duration
 from pypulseq.make_arbitrary_grad import make_arbitrary_grad
+from pypulseq.make_trapezoid import make_trapezoid
 from pypulseq.make_extended_trapezoid import make_extended_trapezoid
 from pypulseq.opts import Opts
 from pypulseq.points_to_waveform import points_to_waveform
@@ -37,20 +38,59 @@ def add_gradients(
     grad : SimpleNamespace
         Superimposition of gradient events from `grads`.
     """
+    if len(grads) == 0:
+        raise ValueError("Gradient list is empty")
+    if len(grads) == 1:
+        # TODO: Technically this should copy the gradient
+        return grads[0]
+    
     # copy() to emulate pass-by-value; otherwise passed grad events are modified
-    grads = deepcopy(grads)
+    # grads = deepcopy(grads)
 
     if max_grad <= 0:
         max_grad = system.max_grad
     if max_slew <= 0:
         max_slew = system.max_slew
 
-    if len(grads) < 2:
-        raise ValueError("Cannot add less than two gradients")
+
 
     # First gradient defines channel
     channel = grads[0].channel
 
+    # Check if we have a set of traps with the same timing
+    if all(g.type == 'trap' for g in grads):
+        # cond1 = 1 == len(np.unique([g.delay for g in grads]))
+        # cond2 = 1 == len(np.unique([g.rise_time for g in grads]))
+        # cond3 = 1 == len(np.unique([g.flat_time for g in grads]))
+        # cond4 = 1 == len(np.unique([g.fall_time for g in grads]))
+        
+        cond1 = all(g.delay == grads[0].delay for g in grads)
+        cond2 = all(g.rise_time == grads[0].rise_time for g in grads)
+        cond3 = all(g.flat_time == grads[0].flat_time for g in grads)
+        cond4 = all(g.fall_time == grads[0].fall_time for g in grads)
+        
+        if cond1 and cond2 and cond3 and cond4:
+            return make_trapezoid(grads[0].channel,
+                                  amplitude=sum(g.amplitude for g in grads)+eps,
+                                  rise_time=grads[0].rise_time,
+                                  flat_time=grads[0].flat_time,
+                                  fall_time=grads[0].fall_time,
+                                  delay=grads[0].delay,
+                                  system=system)
+            # grad = deepcopy(grads[0])
+            # grad.amplitude = sum(g.amplitude for g in grads)
+            # grad.area = sum(g.area for g in grads)
+            # grad.flat_area = sum(g.flat_area for g in grads)
+            
+            # if np.abs(grad.amplitude) > max_grad:
+            #     raise ValueError(f"Amplitude violation: {np.abs(grad.amplitude)} > {max_grad}")
+
+            # if np.abs(grad.amplitude)/grad.rise_time > max_slew:
+            #     raise ValueError(f"Slew rate violation (rise): {np.abs(grad.amplitude)/grad.rise_time} > {max_slew}")
+            # if np.abs(grad.amplitude)/grad.fall_time > max_slew:
+            #     raise ValueError(f"Slew rate violation (fall): {np.abs(grad.amplitude)/grad.fall_time} > {max_slew}")
+
+    
     # Find out the general delay of all gradients and other statistics
     delays, firsts, lasts, durs, is_trap, is_arb = [], [], [], [], [], []
     for ii in range(len(grads)):
@@ -65,28 +105,11 @@ def add_gradients(
         if is_trap[-1]:
             is_arb.append(False)
         else:
-            tt_rast = grads[ii].tt / system.grad_raster_time + 0.5
+            tt_rast = grads[ii].tt / system.grad_raster_time - 0.5
             is_arb.append(np.all(np.abs(tt_rast - np.arange(len(tt_rast)))) < eps)
 
-    # Convert to numpy.ndarray for fancy-indexing later on
-    firsts, lasts = np.array(firsts), np.array(lasts)
 
-    common_delay = np.min(delays)
-    total_duration = np.max(durs)
 
-    # Check if we have a set of traps with the same timing
-    if np.all(is_trap):
-        cond1 = 1 == len(np.unique([g.delay for g in grads]))
-        cond2 = 1 == len(np.unique([g.rise_time for g in grads]))
-        cond3 = 1 == len(np.unique([g.flat_time for g in grads]))
-        cond4 = 1 == len(np.unique([g.fall_time for g in grads]))
-        if cond1 and cond2 and cond3 and cond4:
-            grad = grads[0]
-            grad.amplitude = np.sum([g.amplitude for g in grads])
-            grad.area = np.sum([g.area for g in grads])
-            grad.flat_area = np.sum([g.flat_area for g in grads])
-
-            return grad
 
     # Check if we only have arbitrary grads on irregular time samplings, optionally mixed with trapezoids
     if np.all(np.logical_or(is_trap, np.logical_not(is_arb))):
@@ -103,13 +126,13 @@ def add_gradients(
 
         times = np.sort(np.unique(times))
         dt = times[1:] - times[:-1]
-        ieps = dt < eps
+        ieps = np.where(dt < eps)[0]
         if np.any(ieps):
-            dtx = [times[0], *dt]
+            dtx = np.array([times[0], *dt])
             dtx[ieps] = (
                 dtx[ieps] + dtx[ieps + 1]
             )  # Assumes that no more than two too similar values can occur
-            dtx[ieps + 1] = []
+            dtx = np.delete(dtx, ieps+1)
             times = np.cumsum(dtx)
 
         amplitudes = np.zeros_like(times)
@@ -143,6 +166,11 @@ def add_gradients(
             channel=channel, amplitudes=amplitudes, times=times, system=system
         )
         return grad
+    
+    # Convert to numpy.ndarray for fancy-indexing later on
+    firsts, lasts = np.array(firsts), np.array(lasts)
+    common_delay = np.min(delays)
+    durs = np.array(durs)
 
     # Convert everything to a regularly-sampled waveform
     waveforms = dict()
@@ -197,7 +225,7 @@ def add_gradients(
             waveforms[ii] = np.insert(waveforms[ii], 0, t_delay)
 
         num_points = len(waveforms[ii])
-        max_length = num_points if num_points > max_length else max_length
+        max_length = max(num_points, max_length)
 
     w = np.zeros(max_length)
     for ii in range(len(grads)):
@@ -217,6 +245,6 @@ def add_gradients(
     # First is defined by the sum of firsts with the minimal delay (common_delay)
     # Last is defined by the sum of lasts with the maximum duration (total_duration)
     grad.first = np.sum(firsts[np.array(delays) == common_delay])
-    grad.last = np.sum(lasts[np.where(durs == total_duration)])
+    grad.last = np.sum(lasts[durs == durs.max()])
 
     return grad

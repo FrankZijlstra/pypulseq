@@ -10,6 +10,7 @@ from warnings import warn
 
 import matplotlib as mpl
 import numpy as np
+from scipy.interpolate import PPoly
 from matplotlib import pyplot as plt
 
 from pypulseq import eps
@@ -23,6 +24,7 @@ from pypulseq.decompress_shape import decompress_shape
 from pypulseq.event_lib import EventLibrary
 from pypulseq.opts import Opts
 from pypulseq.supported_labels_rf_use import get_supported_labels
+from pypulseq.utils.ppoly import ppoly_nth_moment, ppoly_split
 from version import major, minor, revision
 
 
@@ -64,6 +66,7 @@ class Sequence:
         self.system = system
 
         self.block_events = OrderedDict()  # Event table
+        self.blocks = OrderedDict()  # Event table
         self.definitions = dict()  # Optional sequence definitions
 
         self.rf_raster_time = (
@@ -263,6 +266,268 @@ class Sequence:
 
         return k_traj_adc, k_traj, t_excitation, t_refocusing, t_adc
 
+    def calculate_kspacePP1(
+        self,
+        trajectory_delay: Union[int, float, np.ndarray] = 0,
+        gradient_offset: int = 0,
+    ) -> Tuple[np.array, np.array, np.array, np.array, np.array]:
+        """
+        Calculates the k-space trajectory of the entire pulse sequence.
+
+        Parameters
+        ----------
+        trajectory_delay : int, default=0
+            Compensation factor in seconds (s) to align ADC and gradients in the reconstruction.
+
+        Returns
+        -------
+        k_traj_adc : numpy.array
+            K-space trajectory sampled at `t_adc` timepoints.
+        k_traj : numpy.array
+            K-space trajectory of the entire pulse sequence.
+        t_excitation : numpy.array
+            Excitation timepoints.
+        t_refocusing : numpy.array
+            Refocusing timepoints.
+        t_adc : numpy.array
+            Sampling timepoints.
+        """
+        if np.any(np.abs(trajectory_delay) > 100e-6):
+            raise Warning(
+                f"Trajectory delay of {trajectory_delay * 1e6} us is suspiciously high"
+            )
+
+        total_duration = np.sum(self.block_durations)
+
+        t_excitation, fp_excitation, t_refocusing, _, t_adc, _ = self.rf_times()
+        gw_pp = self.get_gradients(trajectory_delay, gradient_offset)
+        ng = len(gw_pp)
+        
+        # Calculate slice positions. For now we entirely rely on the excitation -- ignoring complicated interleaved
+        # refocused sequences
+        if len(t_excitation) > 0:
+            # Position in x, y, z
+            slice_pos = np.zeros((ng, t_excitation.shape[0]))
+            for j in range(ng):
+                if gw_pp[j] is None:
+                    slice_pos[j] = np.nan
+                else:
+                    # Check for divisions by zero to avoid numpy warning
+                    divisor = np.array(gw_pp[j](t_excitation))
+                    slice_pos[j, divisor != 0.0] = fp_excitation[0,divisor != 0.0] / divisor[divisor != 0.0]
+                    slice_pos[j, divisor == 0.0] = np.nan
+                    
+            slice_pos[~np.isfinite(slice_pos)] = 0  # Reset undefined to 0
+            t_slice_pos = t_excitation[0]
+        else:
+            slice_pos = []
+            t_slice_pos = []
+        
+        # Integrate waveforms as PPs to produce gradient moments
+        gm_pp = self.get_gradient_moment(gw_pp=gw_pp,
+                                         t_excitation=t_excitation,
+                                         t_refocusing=t_refocusing)    
+        
+        tc = []
+        for i in range(ng):
+            if gm_pp[i] == None:
+                continue
+            
+            tc.extend(gm_pp[i].x)
+            # "Sample" ramps for display purposes otherwise piecewise-linear display (plot) fails
+            ii = np.flatnonzero(np.abs(gm_pp[i].c[0, :]) > eps)
+            if len(ii) > 0:
+                for j in range(len(ii)):
+                    res = (
+                        np.arange(
+                            np.floor(float(gm_pp[i].x[ii[j]] / self.grad_raster_time)),
+                            np.ceil(
+                                (gm_pp[i].x[ii[j] + 1] / self.grad_raster_time) + 1
+                            ),
+                        )
+                        * self.grad_raster_time
+                    )
+                    tc.extend(res)
+        tc = np.array(tc)
+
+        t_acc = 1e-10  # Temporal accuracy
+        t_acc_inv = 1 / t_acc
+
+        t_ktraj = t_acc * np.unique(
+            np.round(
+                t_acc_inv
+                * np.array(
+                    [
+                        *tc,
+                        0,
+                        *np.array(t_excitation) - 2 * self.rf_raster_time,
+                        *np.array(t_excitation) - self.rf_raster_time,
+                        *t_excitation,
+                        *np.array(t_refocusing) - self.rf_raster_time,
+                        *t_refocusing,
+                        *t_adc,
+                        total_duration,
+                    ]
+                )
+            )
+        )
+        
+        i_excitation = np.isin(t_ktraj, t_acc * np.round(t_acc_inv * t_excitation))
+        i_excitation = np.nonzero(i_excitation)[0]  # Convert boolean array into indices
+        i_refocusing = np.isin(t_ktraj, t_acc * np.round(t_acc_inv * t_refocusing))
+        i_refocusing = np.nonzero(i_refocusing)[0]  # Convert boolean array into indices
+        i_adc = np.isin(t_ktraj, t_acc * np.round(t_acc_inv * t_adc))
+        i_adc = np.nonzero(i_adc)[0]  # Convert boolean array into indices
+
+        k_traj = np.stack([x(t_ktraj) if x else np.zeros(t_ktraj.shape) for x in gm_pp])
+        k_traj[:, i_excitation] = np.nan
+        k_traj[:, i_refocusing] = np.nan
+        k_traj_adc = k_traj[:, i_adc]
+        
+        return k_traj_adc, k_traj, t_excitation, t_refocusing, t_adc
+                    
+            
+    def get_gradients(self,
+        trajectory_delay: Union[int, float, np.ndarray] = 0,
+        gradient_offset: int = 0,
+        interval: List[Union[int, float]] = None,
+        gw_data = None) -> List[PPoly]:
+        if np.any(np.abs(trajectory_delay) > 100e-6):
+            raise Warning(
+                f"Trajectory delay of {trajectory_delay * 1e6} us is suspiciously high"
+            )
+
+        total_duration = np.sum(self.block_durations)
+        
+        if gw_data == None:
+            gw_data = self.waveforms(interval=interval)
+
+        ng = len(gw_data)
+        # Gradient delay handling
+        if isinstance(trajectory_delay, (int, float)):
+            gradient_delays = [trajectory_delay] * ng
+        else:
+            assert (
+                len(trajectory_delay) == ng
+            )  # Need to have same number of gradient channels
+            gradient_delays = [trajectory_delay] * ng
+
+        # Gradient offset handling
+        if isinstance(gradient_offset, (int, float)):
+            gradient_offset = [gradient_offset] * ng
+        else:
+            assert (
+                len(gradient_offset) == ng
+            )  # Need to have same number of gradient channels
+
+        # Convert data to piecewise polynomials
+        gw_pp = []
+        for j in range(ng):
+            wave_cnt = gw_data[j].shape[1]
+            if wave_cnt == 0:
+                if np.abs(gradient_offset[j]) <= eps:
+                    gw_pp.append(None)
+                    continue
+                else:
+                    gw = np.array(([0, total_duration], [0, 0]))
+            else:
+                gw = gw_data[j]
+
+            # Now gw contains the waveform from the current axis
+            if np.abs(gradient_delays[j]) > eps:
+                gw[0] = gw[0] - gradient_delays[j]  # Anisotropic gradient delay support
+            if not np.all(np.isfinite(gw)):
+                raise Warning("Not all elements of the generated waveform are finite.")
+
+            teps = 1e-12
+            if gw[0, 0] > 0 and gw[0, -1] < total_duration:
+                # teps terms to avoid integration errors over extended periods of time
+                _temp1 = np.array(([-teps, gw[0, 0] - teps], [0, 0]))
+                _temp2 = np.array(([gw[0, -1] + teps, total_duration + teps], [0, 0]))
+                gw = np.hstack((_temp1, gw, _temp2))
+            elif gw[0, 0] > 0:
+                _temp = np.array(([-teps, gw[0, 0] - teps], [0, 0]))
+                gw = np.hstack((_temp, gw))
+            elif gw[0, -1] < total_duration:
+                _temp = np.array(([gw[0, -1] + teps, total_duration + teps], [0, 0]))
+                gw = np.hstack((gw, _temp))
+
+            if np.abs(gradient_offset[j]) > eps:
+                gw[1,:] += gradient_offset[j]
+
+            gw[1][gw[1] == -0.0] = 0.0
+
+            gw_pp.append(PPoly(np.stack((np.diff(gw[1]) / np.diff(gw[0]),
+                                         gw[1][:-1])), gw[0], extrapolate=False))
+        return gw_pp
+    
+    def get_gradient_moment(self,
+        trajectory_delay: Union[int, float, np.ndarray] = 0,
+        gradient_offset: int = 0,
+        n: int = 0,
+        excitation_mode: str = 'reset',
+        interval: List[Union[int, float]] = None,
+        gw_pp: List[PPoly] = None,
+        t_excitation = None,
+        t_refocusing = None) -> List[PPoly]:
+        
+        if n == 0 and excitation_mode == 'reset_and_shift':
+            excitation_mode = 'reset'
+        
+        if gw_pp == None:
+            gw_pp = self.get_gradients(trajectory_delay, gradient_offset, interval=interval)
+        
+        if t_excitation is None or t_refocusing is None:
+            t_excitation, _, t_refocusing, _, _, _ = self.rf_times()
+        ng = len(gw_pp)
+                
+        reference_point = t_excitation[0] if len(t_excitation) > 0 else 0
+        
+        if excitation_mode == 'reset_and_shift':
+            # Moments resets to zero at RF excitations, and the time for the
+            # next segment is adjusted to t' = t - t_excitation (relevant for
+            # higher order moments that integrate over "G * (t**order)")
+            gm_pp = []
+            for i in range(ng):
+                if gw_pp[i] == None:
+                    gm_pp.append(None)
+                
+                # Split ppoly at excitation points
+                pp_input = ppoly_split(gw_pp[i], t_excitation, extrapolate=False)
+                pp = PPoly(np.zeros((pp_input.c.shape[0]+1+n, pp_input.c.shape[1]), dtype=pp_input.c.dtype), pp_input.x)
+
+                ii = np.searchsorted(pp_input.x, t_excitation)
+                if ii[0] != 0:
+                    ii = np.insert(ii, 0, 0)
+                if ii[-1] < len(pp.x)-1:
+                    ii = np.append(ii, len(pp_input.x)-1)
+                
+                # Calculate nth moment for each scan segment, treating each
+                # excitation as a reference point
+                for ii1, ii2 in zip(ii[:-1], ii[1:]):
+                    pp_interval = PPoly(pp_input.c[:,ii1:ii2], pp_input.x[ii1:ii2+1])
+                    pp_interval = ppoly_nth_moment(pp_interval, n, reference_point=pp.x[ii1])
+                    pp.c[:,ii1:ii2] = pp_interval.c
+                
+                pp = ppoly_split(pp, t_refocusing, mode='refocus')
+                gm_pp.append(pp)
+                
+        elif excitation_mode == 'reset':
+            # Moment resets to zero at RF excitations
+            gm_pp = [ppoly_nth_moment(x, n, reference_point) for x in gw_pp]
+            gm_pp = [ppoly_split(x, t_excitation, mode='reset') for x in gm_pp]
+            gm_pp = [ppoly_split(x, t_refocusing, mode='refocus') for x in gm_pp]
+        
+        else:
+            # Nothing happens at RF excitations
+            gm_pp = [ppoly_nth_moment(x, n, reference_point) for x in gw_pp]
+            gm_pp = [ppoly_split(x, t_refocusing, mode='refocus') for x in gm_pp]
+
+        return gm_pp
+            
+        
+        
+
     def calculate_kspacePP(
         self,
         trajectory_delay: Union[int, float, np.ndarray] = 0,
@@ -318,13 +583,11 @@ class Sequence:
 
         # Convert data to piecewise polynomials
         gw_pp = []
-        gw_pp_MATLAB = []
         for j in range(ng):
             wave_cnt = gw_data[j].shape[1]
             if wave_cnt == 0:
                 if np.abs(gradient_offset[j]) <= eps:
                     gw_pp.append(None)
-                    gw_pp_MATLAB.append(None)
                     continue
                 else:
                     gw = np.array(([0, total_duration], [0, 0]))
@@ -354,47 +617,10 @@ class Sequence:
                 gw[1,:] += gradient_offset[j]
 
             gw[1][gw[1] == -0.0] = 0.0
-            # Specify window to be same as domain prevent numpy from remapping to [-1, 1]
-            polyfit = [
-                np.polynomial.Polynomial(
-                    [gw[1,i] - (gw[1, i] - gw[1, i+1]) / (gw[0,i] - gw[0,i+1]) * gw[0,i],
-                     (gw[1, i] - gw[1, i+1]) / (gw[0,i] - gw[0,i+1])],
-                    gw[0, i : (i + 2)],
-                    gw[0, i : (i + 2)]
-                )
-                for i in range(len(gw[0]) - 1)
-                ]
-            
-            polyfit = np.stack(polyfit)
-            gw_pp.append(polyfit)
 
-            ###
-            """
-            Fix coefs for consistency with MATLAB:
-            1. MATLAB returns coefficients in descending order whereas Numpy returns coefficients in ascending order. 
-            2. MATLAB returns local coefficients that will NOT match Numpy's outputs. Refer to the equation under the 
-            "output arguments" section of `mkpp` MATLAB docs to convert and match coefficient outputs.
-            3. Finally, MATLAB seems to not store any -1 < x < 1 coefficients, so we zero them out.
-            """
-            polyfit_MATLAB = []
-            for i in range(len(polyfit)):
-                polyfit_MATLAB_i = copy(polyfit[i])
-                lower = polyfit_MATLAB_i.domain[0]
-                co = polyfit_MATLAB_i.coef
-                co = co[::-1]  # Reverse
-                a = co[0]
-                b = co[1] + (a * lower)
-                if -1 < a < 1:  # to investigate
-                    a = 0
-                if -1 < b < 1:
-                    b = 0
-                # co = [b, a]  # Un-reverse for Numpy
-                co = [a, b]
-                polyfit_MATLAB_i.coef = co
-                polyfit_MATLAB.append(polyfit_MATLAB_i)
-            gw_pp_MATLAB.append(polyfit_MATLAB)
-            ###
-
+            gw_pp.append(PPoly(np.stack((np.diff(gw[1]) / np.diff(gw[0]),
+                                         gw[1][:-1])), gw[0], extrapolate=False))
+       
         # Calculate slice positions. For now we entirely rely on the excitation -- ignoring complicated interleaved
         # refocused sequences
         if len(tfp_excitation) > 0:
@@ -405,7 +631,7 @@ class Sequence:
                     slice_pos[j] = np.nan
                 else:
                     # Check for divisions by zero to avoid numpy warning
-                    divisor = np.array(self.ppval_numpy(gw_pp[j], tfp_excitation[0]))
+                    divisor = np.array(gw_pp[j](tfp_excitation[0]))
                     slice_pos[j, divisor != 0.0] = tfp_excitation[1, divisor != 0.0] / divisor[divisor != 0.0]
                     slice_pos[j, divisor == 0.0] = np.nan
                     
@@ -415,63 +641,32 @@ class Sequence:
             slice_pos = []
             t_slice_pos = []
 
-        # FNINT
-        def fnint(arr_poly):
-            pieces = len(arr_poly)
-            breaks = np.stack([pp.domain for pp in arr_poly])
-            breaks = np.append(breaks[:, 0], breaks[-1, 1])
-            coefs = np.stack([pp.coef for pp in arr_poly])
-            order = len(arr_poly[1].coef)
-            dim = 1
-            coefs = coefs / np.tile(range(order, 0, -1), (dim * pieces, 1))
-            xs = np.diff(breaks[:-1])
-            index = np.arange(pieces - 1)
-            vv = xs * coefs[index, 0]
-            for i in range(1, order):
-                vv = xs * (vv + coefs[index, i])
-            last = np.cumsum(np.insert(vv, 0, 0)).reshape((-1, 1))
-
-            coefs = np.hstack((coefs[:, :order], last))
-            arr_poly_integ = []
-            for i in range(pieces):
-                arr_poly_integ.append(
-                    np.polynomial.Polynomial(
-                        coefs[i],
-                        domain=[breaks[i], breaks[i + 1]],
-                        window=[breaks[i], breaks[i + 1]],
-                    )
-                )
-
-            return arr_poly_integ, coefs, breaks
-
         # =========
-
         # Integrate waveforms as PPs to produce gradient moments
         gm_pp = []
         tc = []
         for i in range(ng):
             if gw_pp[i] is None:
+                gm_pp.append(None)
                 continue
-            res_fnint, res_coefs, res_breaks = fnint(gw_pp_MATLAB[i])
-            gm_pp.append(res_fnint)
-            tc.append(res_breaks)
+            
+            gm_pp.append(gw_pp[i].antiderivative())
+            tc.extend(gm_pp[i].x)
             # "Sample" ramps for display purposes otherwise piecewise-linear display (plot) fails
-            ii = np.nonzero(np.abs(res_coefs[:, 0]) > eps)[0]
+            ii = np.nonzero(np.abs(gm_pp[i].c[0, :]) > eps)[0]
             if len(ii) > 0:
-                tca = []
                 for j in range(len(ii)):
                     res = (
                         np.arange(
-                            np.floor(float(res_breaks[ii[j]] / self.grad_raster_time)),
+                            np.floor(float(gm_pp[i].x[ii[j]] / self.grad_raster_time)),
                             np.ceil(
-                                (res_breaks[ii[j] + 1] / self.grad_raster_time) + 1
+                                (gm_pp[i].x[ii[j] + 1] / self.grad_raster_time) + 1
                             ),
                         )
                         * self.grad_raster_time
                     )
-                    tca.extend(res)
-                tc.append(tca)
-        tc = np.array(list(chain(*tc)))
+                    tc.extend(res)
+        tc = np.array(tc)
 
         if len(tfp_excitation) == 0:
             t_excitation = np.array([])
@@ -504,6 +699,7 @@ class Sequence:
                 )
             )
         )
+
         i_excitation = np.isin(t_ktraj, t_acc * np.round(t_acc_inv * t_excitation))
         i_excitation = np.nonzero(i_excitation)[0]  # Convert boolean array into indices
         i_refocusing = np.isin(t_ktraj, t_acc * np.round(t_acc_inv * t_refocusing))
@@ -523,14 +719,14 @@ class Sequence:
 
         k_traj = np.zeros((3, len(t_ktraj)))
         for i in range(ng):
-            if gw_pp_MATLAB[i] is None:
+            if gw_pp[i] is None:
                 continue
 
             it = np.where(np.logical_and(
-                t_ktraj >= t_acc * np.round(t_acc_inv * res_breaks[0]),
-                t_ktraj <= t_acc * np.round(t_acc_inv * res_breaks[-1]),
+                t_ktraj >= t_acc * np.round(t_acc_inv * gm_pp[i].x[0]),
+                t_ktraj <= t_acc * np.round(t_acc_inv * gm_pp[i].x[-1]),
             ))[0]
-            k_traj[i, it] = self.ppval_MATLAB(gm_pp[i], t_ktraj[it])
+            k_traj[i, it] = gm_pp[i](t_ktraj[it])
             if t_ktraj[it[-1]] < t_ktraj[-1]:
                 k_traj[i, it[-1] + 1 :] = k_traj[i, it[-1]]
 
@@ -569,7 +765,7 @@ class Sequence:
         k_traj[:, i_period_end] = k_traj[:, i_period_end] + dk
         k_traj_adc = k_traj[:, i_adc]
 
-        return k_traj_adc, k_traj, t_excitation, t_refocusing, t_adc
+        return k_traj_adc, k_traj, t_excitation, t_refocusing, t_adc #, t_ktraj
 
     def check_timing(self) -> Tuple[bool, List[str]]:
         """
@@ -675,38 +871,25 @@ class Sequence:
 
         return duration, num_blocks, event_count
 
-    def __flatten_jagged_arr(self, arr: np.array) -> np.array:
-        # Sanity check: we don't need to do anything if we have a flat array
-        def __flat_check(arr: np.array) -> bool:
-            return all([not isinstance(x, Iterable) for x in arr])
+    def duration2(self) -> Tuple[int, int, np.ndarray]:
+        """
+        Returns the total duration of this sequence, and the total count of blocks and events.
 
-        if __flat_check(arr):
-            return arr
-
-        # Flatten the array simply -- 1 level deep
-        arr_flattened = list(itertools.chain(*arr))
-
-        # Not flat yet?
-        if __flat_check(arr_flattened):
-            return arr_flattened
-
-        # Flatten the array -- 2 levels deep
-        any_ragged = [isinstance(x, Iterable) for x in arr_flattened]
-
-        if np.any(any_ragged):
-            idx_ragged = np.array(np.where(any_ragged)[0])
-            for i in range(len(idx_ragged)):
-                ii = idx_ragged[i]
-
-                # If we are not at the end of the list, we need to update the indices of the remaining elements
-                # Because once we expand and insert this list element, the indices of the remaining elements
-                # will be shifted by len(this element)
-                if i != len(idx_ragged) - 1:
-                    idx_ragged[i + 1 :] += len(arr_flattened[ii])
-
-                arr_flattened = np.insert(arr_flattened, ii, arr_flattened[ii])
-
-        return arr_flattened
+        Returns
+        -------
+        duration : int
+            Duration of this sequence in seconds (s).
+        num_blocks : int
+            Number of blocks in this sequence.
+        event_count : np.ndarray
+            Number of events in this sequence.
+        """
+        num_blocks = len(self.block_events)
+        duration = sum(self.block_durations)
+        # event_count = sum(x > 0 for x in self.block_events.values())
+        event_count = (np.stack(list(self.block_events.values()))>0).sum(axis=0)
+        
+        return duration, num_blocks, event_count
 
     def flip_grad_axis(self, axis: str) -> None:
         """
@@ -959,6 +1142,7 @@ class Sequence:
             cycler = mpl.cycler(color=label_colors_to_plot)
             sp11.set_prop_cycle(cycler)
 
+
         # Block timings
         block_edges = np.cumsum([0, *self.block_durations])
         block_edges_in_range = block_edges[
@@ -971,8 +1155,8 @@ class Sequence:
 
         for block_counter in range(len(self.block_events)):
             block = self.get_block(block_counter + 1)
-            is_valid = (time_range[0] <= t0 + self.block_durations[block_counter] and
-                        t0 <= time_range[1])
+            is_valid = (time_range[0] <= t0 + self.block_durations[block_counter]
+                        and t0 <= time_range[1])
             if is_valid:
                 if getattr(block, "label", None) is not None:
                     for i in range(len(block.label)):
@@ -1098,68 +1282,6 @@ class Sequence:
 
         if plot_now:
             plt.show()
-
-    def ppval_numpy(self, arr_np_poly: np.ndarray, xq: np.ndarray):
-        """
-        Perform piece-wise polynomial evaluation on Numpy's polyfit objects.
-
-        Parameters
-        ==========
-        arr_np_poly : Iterable[np.poly1d]
-        xq : np.array
-
-        Returns
-        =======
-        """
-        result = []
-        result2 = []
-        breaks = np.array([p.domain for p in arr_np_poly])
-        breaks = np.array([*breaks[::2].flatten(), breaks[-1, -1]])
-        last_match = 0
-        for x in xq:
-            # Evaluate polynomial only when we find x's corresponding pp window
-            for i in range(last_match, len(arr_np_poly)):
-                corresponding_pp = x > arr_np_poly[i].domain
-                if corresponding_pp.tolist() == [True, False]:
-                    value = np.polynomial.polynomial.polyval(x, arr_np_poly[i].coef)
-                    result.append(value)
-                    last_match = i
-                    break
-
-            corresponding_pp2 = np.nonzero((x < breaks))[0][0]
-            value2 = np.polynomial.polynomial.polyval(
-                x, arr_np_poly[corresponding_pp2].coef
-            )
-            result2.append(value2)
-
-        return result
-
-    def ppval_MATLAB(self, arr_MATLAB_poly: np.ndarray, xq: np.ndarray) -> np.array:
-        """
-        Perform piece-wise polynomial evaluation on MATLAB's polyfit objects.
-
-        Returns
-        =======
-        """
-
-        def __ppval(c, x, b, i, n):
-            return c[n] * (x - b) ** i + __ppval(c, x, b, i + 1, n - 1) if n >= 0 else 0
-
-        coefs = np.array([p.coef for p in arr_MATLAB_poly])
-        breaks = np.array([p.domain for p in arr_MATLAB_poly])
-        breaks = np.array([*breaks[::2].flatten(), breaks[-1, -1]])
-        result = []
-
-        for x in xq:
-            corresponding_pp = np.nonzero((x < breaks))[0][0]
-            c = coefs[corresponding_pp - 1]
-            b = breaks[corresponding_pp - 1]
-            # c = coefs[2]
-            # res = c[0] * (x - breaks[2]) ** 2 + c[1] * (x - breaks[2]) + c[2]
-            res = __ppval(c, x, b, i=0, n=len(c) - 1)
-            result.append(res)
-
-        return np.array(result)
 
     def read(self, file_path: str, detect_rf_use: bool = False) -> None:
         """
@@ -1325,7 +1447,7 @@ class Sequence:
         return ext_test_report(self)
 
     def waveforms_and_times(
-        self, append_RF: bool = False
+        self, append_RF: bool = False, interval: list = None
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Decompress the entire gradient waveform. Returns gradient waveforms as a tuple of `np.ndarray` of
@@ -1371,8 +1493,20 @@ class Sequence:
         curr_dur = 0
         out_len = np.zeros(shape_channels)  # Last 'channel' is RF
 
-        for block_counter in range(num_blocks):
+        if interval == None:
+            begin_block = 0
+            end_block = num_blocks
+        else:
+            if len(interval) != 2:
+                raise ValueError('Time interval must be list of two elements')
+            
+            t = np.cumsum(self.block_durations)
+            begin_block = np.searchsorted(t, interval[0])
+            end_block = np.searchsorted(t - np.array(self.block_durations), interval[1], side='right')
+
+        for block_counter in range(begin_block, end_block):
             block = self.get_block(block_counter + 1)
+            
             for j in range(len(grad_channels)):
                 grad = getattr(block, grad_channels[j])
                 if grad is not None:  # Gradients
@@ -1392,11 +1526,19 @@ class Sequence:
                             # TODO: Implement restoreAdditionalShapeSamples
                             #       https://github.com/pulseq/pulseq/blob/master/matlab/%2Bmr/restoreAdditionalShapeSamples.m
                             
-                            out_len[j] += len(grad.tt)
+                            # out_len[j] += len(grad.tt)
+                            # shape_pieces[j, block_counter] = np.array(
+                            #     [
+                            #         curr_dur + grad.delay + grad.tt,
+                            #         grad.waveform,
+                            #     ]
+                            # )
+                            
+                            out_len[j] += len(grad.tt)+2
                             shape_pieces[j, block_counter] = np.array(
                                 [
-                                    curr_dur + grad.delay + grad.tt,
-                                    grad.waveform,
+                                    curr_dur + grad.delay + np.concatenate(([0], grad.tt, [grad.tt[-1] + self.grad_raster_time/2])),
+                                    np.concatenate(([grad.first], grad.waveform, [grad.last]))
                                 ]
                             )
                         else:  # Extended trapezoid
@@ -1407,6 +1549,15 @@ class Sequence:
                                     grad.waveform,
                                 ]
                             )
+                            
+                            
+                            # out_len[j] += len(grad.tt)+2
+                            # shape_pieces[j, block_counter] = np.array(
+                            #     [
+                            #         curr_dur + grad.delay + np.concatenate(([0], grad.tt, [grad.tt[-1] + self.grad_raster_time/2])),
+                            #         np.concatenate(([grad.first], grad.waveform, [grad.last]))
+                            #     ]
+                            # )
                     else:
                         if np.abs(grad.flat_time) > eps:
                             out_len[j] += 4
@@ -1527,8 +1678,6 @@ class Sequence:
                     "Time vector elements are not monotonically increasing."
                 )
 
-
-
         # Trim output data
         for j in range(shape_channels):
             if wave_cnt[j] < wave_data[j].shape[1]:
@@ -1540,6 +1689,288 @@ class Sequence:
         fp_adc = np.array(fp_adc)
 
         return wave_data, tfp_excitation, tfp_refocusing, t_adc, fp_adc
+
+
+    def waveforms(
+        self, append_RF: bool = False, interval: list = None
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Decompress the entire gradient waveform. Returns gradient waveforms as a tuple of `np.ndarray` of
+        `gradient_axes` (typically 3) dimensions. Each `np.ndarray` contains timepoints and the corresponding
+        gradient amplitude values. Additional return values are time points of excitations, refocusings and ADC
+        sampling points.
+
+        Parameters
+        ----------
+        append_RF : bool, default=False
+            Boolean flag to indicate if RF wave shapes are to be appended after the gradients.
+
+        Returns
+        -------
+        wave_data : np.ndarray
+        tfp_excitation : np.ndarray
+            Contains time moments, frequency and phase offsets of the excitation RF pulses (similar for `
+            tfp_refocusing`).
+        tfp_refocusing : np.ndarray
+        t_adc: np.ndarray
+            Contains times of all ADC sample points.
+        fp_adc : np.ndarray
+            Contains frequency and phase offsets of each ADC object (not samples).
+        """
+        grad_channels = ["gx", "gy", "gz"]
+
+        num_blocks = len(self.block_events)
+
+        # Collect shape pieces
+        if append_RF:
+            shape_channels = len(grad_channels) + 1  # Last 'channel' is RF
+        else:
+            shape_channels = len(grad_channels)
+
+        shape_pieces = [[] for _ in range(shape_channels)]
+
+        curr_dur = 0
+        out_len = np.zeros(shape_channels)  # Last 'channel' is RF
+
+        if interval == None:
+            begin_block = 0
+            end_block = num_blocks
+        else:
+            if len(interval) != 2:
+                raise ValueError('Time interval must be list of two elements')
+            
+            t = np.cumsum(self.block_durations)
+            begin_block = np.searchsorted(t, interval[0])
+            end_block = np.searchsorted(t - np.array(self.block_durations), interval[1], side='right')
+
+        for block_counter in range(begin_block, end_block):
+            block = self.get_block(block_counter + 1)
+            
+            for j in range(len(grad_channels)):
+                grad = getattr(block, grad_channels[j])
+                if grad is not None:  # Gradients
+                    if grad.type == "grad":
+                        # Check if we have an extended trapezoid or an arbitrary gradient on a regular raster
+                        tt_rast = grad.tt / self.grad_raster_time + 0.5
+                        if np.all(
+                            np.abs(tt_rast - np.arange(1, len(tt_rast) + 1)) < eps
+                        ):  # Arbitrary gradient
+                            """
+                            Arbitrary gradient: restore & recompress shape - if we had a trapezoid converted to shape we
+                            have to find the "corners" and we can eliminate internal samples on the straight segments
+                            but first we have to restore samples on the edges of the gradient raster intervals for that
+                            we need the first sample.
+                            """
+                            
+                            # TODO: Implement restoreAdditionalShapeSamples
+                            #       https://github.com/pulseq/pulseq/blob/master/matlab/%2Bmr/restoreAdditionalShapeSamples.m
+                            
+                            # out_len[j] += len(grad.tt)
+                            # shape_pieces[j, block_counter] = np.array(
+                            #     [
+                            #         curr_dur + grad.delay + grad.tt,
+                            #         grad.waveform,
+                            #     ]
+                            # )
+                            
+                            out_len[j] += len(grad.tt)+2
+                            shape_pieces[j].append(np.array(
+                                [
+                                    curr_dur + grad.delay + np.concatenate(([0], grad.tt, [grad.tt[-1] + self.grad_raster_time/2])),
+                                    np.concatenate(([grad.first], grad.waveform, [grad.last]))
+                                ]
+                            ))
+                        else:  # Extended trapezoid
+                            out_len[j] += len(grad.tt)
+                            shape_pieces[j].append(np.array(
+                                [
+                                    curr_dur + grad.delay + grad.tt,
+                                    grad.waveform,
+                                ]
+                            ))
+                            
+                            # out_len[j] += len(grad.tt)+2
+                            # shape_pieces[j, block_counter] = np.array(
+                            #     [
+                            #         curr_dur + grad.delay + np.concatenate(([0], grad.tt, [grad.tt[-1] + self.grad_raster_time/2])),
+                            #         np.concatenate(([grad.first], grad.waveform, [grad.last]))
+                            #     ]
+                            # )
+                    else:
+                        if np.abs(grad.flat_time) > eps:
+                            out_len[j] += 4
+                            _temp = np.vstack(
+                                (
+                                    curr_dur
+                                    + grad.delay
+                                    + np.cumsum(
+                                        [
+                                            0,
+                                            grad.rise_time,
+                                            grad.flat_time,
+                                            grad.fall_time,
+                                        ]
+                                    ),
+                                    grad.amplitude * np.array([0, 1, 1, 0]),
+                                )
+                            )
+                            shape_pieces[j].append(_temp)
+                        else:
+                            if np.abs(grad.rise_time) > eps and np.abs(grad.fall_time) > eps:
+                                out_len[j] += 3
+                                _temp = np.vstack(
+                                    (
+                                        curr_dur
+                                        + grad.delay
+                                        + np.cumsum([0, grad.rise_time, grad.fall_time]),
+                                        grad.amplitude * np.array([0, 1, 0]),
+                                    )
+                                )
+                                shape_pieces[j].append(_temp)
+                            else:
+                                if np.abs(grad.amplitude) > eps:
+                                    print('Warning: "empty" gradient with non-zero magnitude detected in block {}'.format(block_counter))
+
+            if append_RF and block.rf is not None:  # RF
+                rf = block.rf
+                t = rf.delay + calc_rf_center(rf)[0]
+                rf_piece = np.array(
+                    [
+                        curr_dur + rf.delay + rf.t,
+                        rf.signal
+                        * np.exp(
+                            1j
+                            * (rf.phase_offset + 2 * np.pi * rf.freq_offset * rf.t)
+                        ),
+                    ]
+                )
+                out_len[-1] += len(rf.t)
+
+                if np.abs(rf.signal[0]) > 0:
+                    pre = np.array([[curr_dur + rf.delay + rf.t[0] - eps], [0]])
+                    rf_piece = np.hstack((pre, rf_piece))
+                    out_len[-1] += pre.shape[1]
+
+                if np.abs(rf.signal[-1]) > 0:
+                    post = np.array([[curr_dur + rf.delay + rf.t[-1] + eps], [0]])
+                    rf_piece = np.hstack((rf_piece, post))
+                    out_len[-1] += post.shape[1]
+
+                shape_pieces[-1].append(rf_piece)
+
+            curr_dur += self.block_durations[block_counter]
+
+        # Collect wave data
+        wave_data = []
+
+        for j in range(shape_channels):
+            if shape_pieces[j] == []:
+                wave_data.append(np.zeros((2,0)))
+                continue
+            
+            # If the first element of the next shape has the same time as
+            # the last element of the previous shape, drop the first
+            # element of the next shape.
+            shape_pieces[j] = ([shape_pieces[j][0]] +
+                               [cur if prev[0,-1]+eps < cur[0,0] else cur[:,1:]
+                                for prev,cur in zip(shape_pieces[j][:-1], shape_pieces[j][1:])])
+            
+            wave_data.append(np.concatenate(shape_pieces[j], axis=1))
+        
+        for j in range(shape_channels):
+            rftdiff = np.diff(wave_data[j][0])
+            if np.any(rftdiff < eps):
+                raise Warning(
+                    "Time vector elements are not monotonically increasing."
+                )
+
+        return wave_data
+
+    def rf_times(
+        self, interval: list = None
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Decompress the entire gradient waveform. Returns gradient waveforms as a tuple of `np.ndarray` of
+        `gradient_axes` (typically 3) dimensions. Each `np.ndarray` contains timepoints and the corresponding
+        gradient amplitude values. Additional return values are time points of excitations, refocusings and ADC
+        sampling points.
+
+        Parameters
+        ----------
+        append_RF : bool, default=False
+            Boolean flag to indicate if RF wave shapes are to be appended after the gradients.
+
+        Returns
+        -------
+        wave_data : np.ndarray
+        tfp_excitation : np.ndarray
+            Contains time moments, frequency and phase offsets of the excitation RF pulses (similar for `
+            tfp_refocusing`).
+        tfp_refocusing : np.ndarray
+        t_adc: np.ndarray
+            Contains times of all ADC sample points.
+        fp_adc : np.ndarray
+            Contains frequency and phase offsets of each ADC object (not samples).
+        """
+
+        num_blocks = len(self.block_events)
+
+        # Also collect RF and ADC timing data
+        # t_excitation, t_refocusing, t_adc
+        t_excitation = []
+        fp_excitation = []
+        t_refocusing = []
+        fp_refocusing = []
+        t_adc = []
+        fp_adc = []
+
+        curr_dur = 0
+
+        if interval == None:
+            begin_block = 0
+            end_block = num_blocks
+        else:
+            if len(interval) != 2:
+                raise ValueError('Time interval must be list of two elements')
+            
+            t = np.cumsum(self.block_durations)
+            begin_block = np.searchsorted(t, interval[0])
+            end_block = np.searchsorted(t - np.array(self.block_durations), interval[1], side='right')
+
+        for block_counter in range(begin_block, end_block):
+            block = self.get_block(block_counter + 1)
+            
+            if block.rf is not None:  # RF
+                rf = block.rf
+                t = rf.delay + calc_rf_center(rf)[0]
+                if not hasattr(rf, "use") or block.rf.use in [
+                    "excitation",
+                    "undefined",
+                ]:
+                    t_excitation.append(curr_dur + t)
+                    fp_excitation.append([block.rf.freq_offset, block.rf.phase_offset])
+                elif block.rf.use == "refocusing":
+                    t_refocusing.append(curr_dur + t)
+                    fp_refocusing.append([block.rf.freq_offset, block.rf.phase_offset])
+
+            if block.adc is not None:  # ADC
+                t_adc.extend(
+                    (np.arange(block.adc.num_samples) + 0.5) * block.adc.dwell
+                    + block.adc.delay
+                    + curr_dur
+                )
+                fp_adc.append([block.adc.freq_offset, block.adc.phase_offset])
+
+            curr_dur += self.block_durations[block_counter]
+
+        t_excitation = np.array(t_excitation)
+        fp_excitation = np.array(fp_excitation).T
+        t_refocusing = np.array(t_refocusing)
+        fp_refocusing = np.array(fp_refocusing).T
+        t_adc = np.array(t_adc)
+        fp_adc = np.array(fp_adc)
+
+        return t_excitation, fp_excitation, t_refocusing, fp_refocusing, t_adc, fp_adc
 
     def waveforms_export(self, time_range=(0, np.inf)) -> dict:
         """

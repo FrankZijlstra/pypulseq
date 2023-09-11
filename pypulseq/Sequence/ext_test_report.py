@@ -87,7 +87,7 @@ def ext_test_report(self) -> str:
         k_storage_next = 0
         k_map = dict()
         for i in range(k_len):
-            key_string = str(
+            key_string = tuple(
                 (k_bins + np.round(k_traj_adc[:, i] / k_threshold)).astype(np.int32)
             )
             k_storage_ind = k_map.get(key_string)
@@ -138,8 +138,7 @@ def ext_test_report(self) -> str:
         unique_k_positions = 1
 
     # gw_data = self.gradient_waveforms()
-    waveforms_and_times = self.waveforms_and_times()
-    gw_data = waveforms_and_times[0]
+    gw_data = self.waveforms()
     gws = np.zeros_like(gw_data)
     ga = np.zeros(len(gw_data))
     gs = np.zeros(len(gw_data))

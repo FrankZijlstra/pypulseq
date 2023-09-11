@@ -116,15 +116,41 @@ def make_trapezoid(
     elif duration > 0:
         if amplitude == 0:
             if rise_time == 0:
-                dC = 1 / np.abs(2 * max_slew) + 1 / np.abs(2 * max_slew)
-                possible = duration**2 > 4 * np.abs(area) * dC
+                duration = np.ceil(duration / system.grad_raster_time)*system.grad_raster_time
+                # dC = 1 / np.abs(2 * max_slew) + 1 / np.abs(2 * max_slew)
+                # possible = duration**2 > 4 * np.abs(area) * dC
+                
+                # Rampup time to max_grad
+                min_ramp = np.ceil((system.max_grad/system.max_slew) / system.grad_raster_time)*system.grad_raster_time
+                if abs(area) > system.max_grad * min_ramp:
+                    # Not achievable with triangle
+                    min_dur = abs(area) / system.max_grad + np.ceil(system.max_grad/system.max_slew / system.grad_raster_time)*system.grad_raster_time
+                else:
+                    min_dur = 2 * np.sqrt(abs(area) * system.max_slew) / system.max_slew
+                    
+                # TODO: min_dur should adjust both flat time and rise time to raster, not just total duration
+                min_dur = np.ceil(min_dur / system.grad_raster_time)*system.grad_raster_time
+
+                # d = round_to_grad_raster(ramp) + a/x
+
+                possible = duration >= min_dur
+
                 assert possible, (
                     f"Requested area is too large for this gradient. Minimum required duration is "
-                    f"{np.round(np.sqrt(4 * np.abs(area) * dC) * 1e6)} uss"
+                    # f"{np.round(np.sqrt(4 * np.abs(area) * dC) * 1e6)} uss"
+                    f"{np.round(min_dur * 1e6)} uss"
                 )
-                amplitude2 = (
-                    duration - np.sqrt(duration**2 - 4 * np.abs(area) * dC)
-                ) / (2 * dC)
+                
+                d = system.max_slew * (duration**2 * system.max_slew - 4 * abs(area))
+                if d < 0:
+                    print('Warning: negative discriminant?')
+                d = max(d,0)
+                amplitude2 = 1/2 * (duration * system.max_slew - np.sqrt(d))
+                # Other solution provides minimum slew rate solution?
+                # amplitude2 = 1/2 * (duration * system.max_slew + np.sqrt(d))
+                # amplitude2 = (
+                #     duration - np.sqrt(duration**2 - 4 * np.abs(area) * dC)
+                # ) / (2 * dC)
             else:
                 if fall_time == 0:
                     fall_time = rise_time
@@ -136,6 +162,8 @@ def make_trapezoid(
                     f"Requested area is too large for this gradient. Probably amplitude is violated "
                     f"{np.round(np.abs(amplitude) / max_grad * 100)}"
                 )
+        else:
+            amplitude2 = amplitude
 
         if rise_time == 0:
             rise_time = (
@@ -147,7 +175,7 @@ def make_trapezoid(
 
         if fall_time == 0:
             fall_time = rise_time
-        flat_time = duration - rise_time - fall_time
+        flat_time = max(duration - rise_time - fall_time,0)
 
         if amplitude == 0:
             # Adjust amplitude (after rounding) to match area
@@ -185,7 +213,13 @@ def make_trapezoid(
             fall_time = rise_time
 
     if np.abs(amplitude2) > max_grad:
-        raise ValueError("Amplitude violation.")
+        raise ValueError(f"Amplitude violation: {np.abs(amplitude2)} > {max_grad}")
+
+    if np.abs(amplitude2)/rise_time > max_slew:
+        raise ValueError(f"Slew rate violation (rise): {np.abs(amplitude2)/rise_time} > {max_slew}")
+    if np.abs(amplitude2)/fall_time > max_slew:
+        raise ValueError(f"Slew rate violation (fall): {np.abs(amplitude2)/fall_time} > {max_slew}")
+
 
     grad = SimpleNamespace()
     grad.type = "trap"

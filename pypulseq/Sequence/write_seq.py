@@ -69,7 +69,7 @@ def write(self, file_name: str, create_signature) -> None:
             )
             block_duration_rounded = int(np.round(block_duration))
 
-            assert np.abs(block_duration_rounded - block_duration) < 1e-6
+            assert np.abs(block_duration_rounded - block_duration) < 1e-6, (f'{block_duration_rounded} - {block_duration} > 1e-6')
 
             s = id_format_str.format(
                 *(

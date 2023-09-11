@@ -86,6 +86,11 @@ def make_extended_trapezoid(
         )
         > eps
     ):
+        print(np.abs(
+            np.round(times[-1] / system.grad_raster_time) * system.grad_raster_time
+            - times[-1]
+        ))
+        print(times)
         raise ValueError("The last time point must be on a gradient raster")
 
     if skip_check is False and times[0] > 0 and amplitudes[0] != 0:
@@ -104,6 +109,7 @@ def make_extended_trapezoid(
         waveform = points_to_waveform(
             times=times, amplitudes=amplitudes, grad_raster_time=system.grad_raster_time
         )
+        
         grad = make_arbitrary_grad(
             channel=channel,
             waveform=waveform,
@@ -125,6 +131,7 @@ def make_extended_trapezoid(
                 'All time points must be on a gradient raster or "convert_to_arbitrary" option must be used.'
             )
 
+
         grad = SimpleNamespace()
         grad.type = "grad"
         grad.channel = channel
@@ -139,5 +146,11 @@ def make_extended_trapezoid(
 
     grad.first = amplitudes[0]
     grad.last = amplitudes[-1]
+
+    if np.max(np.abs(grad.waveform)) > max_grad:
+        raise ValueError(f"Amplitude violation: {np.max(np.abs(grad.waveform))} > {max_grad}")
+
+    if np.max(np.abs(np.diff(grad.waveform) / np.diff(grad.tt))) > max_slew:
+        raise ValueError(f"Slew rate violation: {np.max(np.abs(np.diff(grad.waveform) / np.diff(grad.tt)))} > {max_slew}")
 
     return grad

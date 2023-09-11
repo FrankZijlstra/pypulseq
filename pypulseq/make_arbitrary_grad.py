@@ -58,10 +58,10 @@ def make_arbitrary_grad(
 
     g = waveform
     slew = np.squeeze(np.subtract(g[1:], g[:-1]) / system.grad_raster_time)
-    if max(abs(slew)) >= max_slew:
-        raise ValueError(f"Slew rate violation {max(abs(slew)) / max_slew * 100}")
-    if max(abs(g)) >= max_grad:
-        raise ValueError(f"Gradient amplitude violation {max(abs(g)) / max_grad * 100}")
+    if max(abs(slew)) > max_slew:
+        raise ValueError(f"Slew rate violation {max(abs(slew)) / max_slew * 100:.1f}%")
+    if max(abs(g)) > max_grad:
+        raise ValueError(f"Gradient amplitude violation {max(abs(g)) / max_grad * 100:.1f}%")
 
     grad = SimpleNamespace()
     grad.type = "grad"

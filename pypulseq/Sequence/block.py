@@ -82,7 +82,7 @@ def set_block(self, block_index: int, *args: SimpleNamespace) -> None:
                     grad_id, _ = register_grad_event(self, event)
 
                 self.block_events[block_index][idx] = grad_id
-                duration = np.max([duration, grad_duration])
+                duration = max(duration, grad_duration)
             elif event.type == "trap":
                 channel_num = ["x", "y", "z"].index(event.channel)
                 idx = 2 + channel_num
@@ -106,14 +106,12 @@ def set_block(self, block_index: int, *args: SimpleNamespace) -> None:
                     trap_id = register_grad_event(self, event)
 
                 self.block_events[block_index][idx] = trap_id
-                duration = np.max(
-                    [
+                duration = max(
                         duration,
                         event.delay
                         + event.rise_time
                         + event.flat_time
-                        + event.fall_time,
-                    ]
+                        + event.fall_time
                 )
             elif event.type == "adc":
                 if hasattr(event, "id"):
@@ -122,14 +120,12 @@ def set_block(self, block_index: int, *args: SimpleNamespace) -> None:
                     adc_id = register_adc_event(self, event)
 
                 self.block_events[block_index][5] = adc_id
-                duration = np.max(
-                    [
+                duration = max(
                         duration,
-                        event.delay + event.num_samples * event.dwell + event.dead_time,
-                    ]
+                        event.delay + event.num_samples * event.dwell + event.dead_time
                 )
             elif event.type == "delay":
-                duration = np.max([duration, event.delay])
+                duration = max(duration, event.delay)
             elif event.type in ["output", "trigger"]:
                 if hasattr(event, "id"):
                     event_id = event.id
@@ -138,7 +134,7 @@ def set_block(self, block_index: int, *args: SimpleNamespace) -> None:
 
                 ext = {"type": self.get_extension_type_ID("TRIGGERS"), "ref": event_id}
                 extensions.append(ext)
-                duration = np.max([duration, event.delay + event.duration])
+                duration = max(duration, event.delay + event.duration)
             elif event.type in ["labelset", "labelinc"]:
                 if hasattr(event, "id"):
                     label_id = event.id
@@ -255,6 +251,9 @@ def get_block(self, block_index: int) -> SimpleNamespace:
         If a trigger event of an unsupported control type is encountered.
         If a label object of an unknown extension ID is encountered.
     """
+
+    if block_index in self.blocks and self.blocks[block_index] != None:
+        return self.blocks[block_index]
 
     block = SimpleNamespace()
     attrs = ["block_duration", "rf", "gx", "gy", "gz", "adc"]
@@ -403,6 +402,7 @@ def get_block(self, block_index: int) -> SimpleNamespace:
 
     block.block_duration = self.block_durations[block_index - 1]
 
+    self.blocks[block_index] = block
     return block
 
 
@@ -423,13 +423,15 @@ def register_adc_event(self, event: EventLibrary) -> int:
         [
             event.num_samples,
             event.dwell,
-            np.max([event.delay, event.dead_time]),
+            max(event.delay, event.dead_time),
             event.freq_offset,
             event.phase_offset,
             event.dead_time,
         ]
     )
     adc_id, _ = self.adc_library.find_or_insert(new_data=data)
+
+    self.blocks.clear()
 
     return adc_id
 
@@ -459,6 +461,8 @@ def register_control_event(self, event: SimpleNamespace) -> int:
 
     data = [event_type + 1, event_channel + 1, event.delay, event.duration]
     control_id, _ = self.trigger_library.find_or_insert(new_data=data)
+
+    self.blocks.clear()
 
     return control_id
 
@@ -500,12 +504,16 @@ def register_grad_event(
             s_data = np.insert(c_shape.data, 0, c_shape.num_samples)
             shape_IDs[0], found = self.shape_library.find_or_insert(s_data)
             may_exist = may_exist & found
+
+            # tmp = np.diff(np.round(event.tt / self.grad_raster_time))
+            # if not (tmp == tmp[0]).all():
             c_time = compress_shape(event.tt / self.grad_raster_time)
 
             if not (
                 len(c_time.data) == 4
                 and np.all(c_time.data == [0.5, 1, 1, c_time.num_samples - 3])
             ):
+                # c_time = compress_shape(event.tt / self.grad_raster_time)
                 t_data = np.insert(c_time.data, 0, c_time.num_samples)
                 shape_IDs[1], found = self.shape_library.find_or_insert(t_data)
                 may_exist = may_exist & found
@@ -530,6 +538,8 @@ def register_grad_event(
         )
     else:
         grad_id = self.grad_library.insert(0, data, event.type[0])
+
+    self.blocks.clear()
 
     if event.type == "grad":
         return grad_id, shape_IDs
@@ -558,6 +568,8 @@ def register_label_event(self, event: SimpleNamespace) -> int:
         label_id, _ = self.label_inc_library.find_or_insert(new_data=data)
     else:
         raise ValueError("Unsupported label type passed to register_label_event()")
+
+    self.blocks.clear()
 
     return label_id
 
@@ -633,5 +645,7 @@ def register_rf_event(self, event: SimpleNamespace) -> Tuple[int, List[int]]:
         rf_id, _ = self.rf_library.find_or_insert(new_data=data, data_type=use)
     else:
         rf_id = self.rf_library.insert(key_id=0, new_data=data, data_type=use)
+
+    self.blocks.clear()
 
     return rf_id, shape_IDs
