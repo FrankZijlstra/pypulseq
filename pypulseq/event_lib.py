@@ -116,8 +116,9 @@ class EventLibrary:
         """
         if not isinstance(new_data, np.ndarray):
             new_data = np.array(new_data)
-        data_string = new_data.tobytes()
-
+        # data_string = new_data.tobytes()
+        data_string = make_key(new_data)
+        
         if data_string in self.keymap:
             key_id = self.keymap[data_string]
             found = True
