@@ -32,7 +32,6 @@ from pypulseq.make_adc import make_adc
 from pypulseq.make_adiabatic_pulse import make_adiabatic_pulse
 from pypulseq.make_arbitrary_grad import make_arbitrary_grad
 from pypulseq.make_arbitrary_rf import make_arbitrary_rf
-from pypulseq.make_arbitrary_grad import make_arbitrary_grad
 from pypulseq.make_block_pulse import make_block_pulse
 from pypulseq.make_sigpy_pulse import *
 from pypulseq.make_delay import make_delay
