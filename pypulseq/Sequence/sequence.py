@@ -1568,7 +1568,7 @@ class Sequence:
                                     curr_dur + grad.delay + np.concatenate(([0], grad.tt, [grad.tt[-1] + self.grad_raster_time/2])),
                                     np.concatenate(([grad.first], grad.waveform, [grad.last]))
                                 ]
-                            )
+                            ))
                         else:  # Extended trapezoid
                             out_len[j] += len(grad.tt)
                             shape_pieces[j].append(np.array(
@@ -1761,14 +1761,6 @@ class Sequence:
                             # TODO: Implement restoreAdditionalShapeSamples
                             #       https://github.com/pulseq/pulseq/blob/master/matlab/%2Bmr/restoreAdditionalShapeSamples.m
                             
-                            # out_len[j] += len(grad.tt)
-                            # shape_pieces[j, block_counter] = np.array(
-                            #     [
-                            #         curr_dur + grad.delay + grad.tt,
-                            #         grad.waveform,
-                            #     ]
-                            # )
-                            
                             out_len[j] += len(grad.tt)+2
                             shape_pieces[j].append(np.array(
                                 [
@@ -1784,14 +1776,6 @@ class Sequence:
                                     grad.waveform,
                                 ]
                             ))
-                            
-                            # out_len[j] += len(grad.tt)+2
-                            # shape_pieces[j, block_counter] = np.array(
-                            #     [
-                            #         curr_dur + grad.delay + np.concatenate(([0], grad.tt, [grad.tt[-1] + self.grad_raster_time/2])),
-                            #         np.concatenate(([grad.first], grad.waveform, [grad.last]))
-                            #     ]
-                            # )
                     else:
                         if np.abs(grad.flat_time) > eps:
                             out_len[j] += 4

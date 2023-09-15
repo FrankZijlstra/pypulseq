@@ -89,7 +89,7 @@ def calc_pns(
     pns_comp = 0.01 * pns_comp[~np.isfinite(res.rf[1:]),:]
     
     # calc pns_norm and the final ok/not_ok
-    pns_norm = math.sqrt((pns_comp**2).sum(axis=1))
+    pns_norm = np.sqrt((pns_comp**2).sum(axis=1))
     ok = all(pns_norm<1)
     
     # ready
