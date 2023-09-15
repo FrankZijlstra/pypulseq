@@ -1,3 +1,4 @@
+import math
 from types import SimpleNamespace
 from typing import Tuple, List, Union
 
@@ -62,12 +63,12 @@ def set_block(self, block_index: int, *args: SimpleNamespace) -> None:
 
                 grad_start = (
                     event.delay
-                    + np.floor(event.tt[0] / self.grad_raster_time + 1e-10)
+                    + math.floor(event.tt[0] / self.grad_raster_time + 1e-10)
                     * self.grad_raster_time
                 )
                 grad_duration = (
                     event.delay
-                    + np.ceil(event.tt[-1] / self.grad_raster_time - 1e-10)
+                    + math.ceil(event.tt[-1] / self.grad_raster_time - 1e-10)
                     * self.grad_raster_time
                 )
 
@@ -252,8 +253,9 @@ def get_block(self, block_index: int) -> SimpleNamespace:
         If a label object of an unknown extension ID is encountered.
     """
 
-    if block_index in self.blocks and self.blocks[block_index] != None:
-        return self.blocks[block_index]
+    # Check if block exists in the block cache. If so, return that
+    if self.use_block_cache and block_index in self.block_cache:
+        return self.block_cache[block_index]
 
     block = SimpleNamespace()
     attrs = ["block_duration", "rf", "gx", "gy", "gz", "adc"]
@@ -334,7 +336,7 @@ def get_block(self, block_index: int) -> SimpleNamespace:
     if event_ind[5] > 0:
         lib_data = self.adc_library.data[event_ind[5]]
         if len(lib_data) < 6:
-            lib_data = np.append(lib_data, 0)
+            lib_data = np.concatenate((lib_data, [0]))
 
         adc = SimpleNamespace()
         (
@@ -402,7 +404,10 @@ def get_block(self, block_index: int) -> SimpleNamespace:
 
     block.block_duration = self.block_durations[block_index - 1]
 
-    self.blocks[block_index] = block
+    # Enter block into the block cache
+    if self.use_block_cache:
+        self.block_cache[block_index] = block
+    
     return block
 
 
@@ -429,9 +434,12 @@ def register_adc_event(self, event: EventLibrary) -> int:
             event.dead_time,
         ]
     )
-    adc_id, _ = self.adc_library.find_or_insert(new_data=data)
+    adc_id, found = self.adc_library.find_or_insert(new_data=data)
 
-    self.blocks.clear()
+    # Clear block cache because ADC was overwritten
+    # TODO: Could find only the blocks that are affected by the changes
+    if self.use_block_cache and found:
+        self.block_cache.clear()
 
     return adc_id
 
@@ -460,9 +468,12 @@ def register_control_event(self, event: SimpleNamespace) -> int:
         raise ValueError("Unsupported control event type")
 
     data = [event_type + 1, event_channel + 1, event.delay, event.duration]
-    control_id, _ = self.trigger_library.find_or_insert(new_data=data)
+    control_id, found = self.trigger_library.find_or_insert(new_data=data)
 
-    self.blocks.clear()
+    # Clear block cache because trigger was overwritten
+    # TODO: Could find only the blocks that are affected by the changes
+    if self.use_block_cache and found:
+        self.block_cache.clear()
 
     return control_id
 
@@ -484,6 +495,7 @@ def register_grad_event(
         For trapezoid gradient events: ID of registered gradient event
     """
     may_exist = True
+    any_changed = False
     if event.type == "grad":
         amplitude = np.abs(event.waveform).max()
         if amplitude > 0:
@@ -501,22 +513,21 @@ def register_grad_event(
             else:
                 g = event.waveform
             c_shape = compress_shape(g)
-            s_data = np.insert(c_shape.data, 0, c_shape.num_samples)
+            s_data = np.concatenate(([c_shape.num_samples], c_shape.data))
             shape_IDs[0], found = self.shape_library.find_or_insert(s_data)
             may_exist = may_exist & found
+            any_changed = any_changed or found
 
-            # tmp = np.diff(np.round(event.tt / self.grad_raster_time))
-            # if not (tmp == tmp[0]).all():
             c_time = compress_shape(event.tt / self.grad_raster_time)
 
             if not (
                 len(c_time.data) == 4
                 and np.all(c_time.data == [0.5, 1, 1, c_time.num_samples - 3])
             ):
-                # c_time = compress_shape(event.tt / self.grad_raster_time)
-                t_data = np.insert(c_time.data, 0, c_time.num_samples)
+                t_data = np.concatenate(([c_time.num_samples], c_time.data))
                 shape_IDs[1], found = self.shape_library.find_or_insert(t_data)
                 may_exist = may_exist & found
+                any_changed = any_changed or found
 
         data = [amplitude, *shape_IDs, event.delay, event.first, event.last]
     elif event.type == "trap":
@@ -533,14 +544,18 @@ def register_grad_event(
         raise ValueError("Unknown gradient type passed to register_grad_event()")
 
     if may_exist:
-        grad_id, _ = self.grad_library.find_or_insert(
+        grad_id, found = self.grad_library.find_or_insert(
             new_data=data, data_type=event.type[0]
         )
+        any_changed = any_changed or found
     else:
         grad_id = self.grad_library.insert(0, data, event.type[0])
-
-    self.blocks.clear()
-
+        
+    # Clear block cache because grad event or shapes were overwritten
+    # TODO: Could find only the blocks that are affected by the changes
+    if self.use_block_cache and any_changed:
+        self.block_cache.clear()
+    
     if event.type == "grad":
         return grad_id, shape_IDs
     elif event.type == "trap":
@@ -563,13 +578,16 @@ def register_label_event(self, event: SimpleNamespace) -> int:
     label_id = get_supported_labels().index(event.label) + 1
     data = [event.value, label_id]
     if event.type == "labelset":
-        label_id, _ = self.label_set_library.find_or_insert(new_data=data)
+        label_id, found = self.label_set_library.find_or_insert(new_data=data)
     elif event.type == "labelinc":
-        label_id, _ = self.label_inc_library.find_or_insert(new_data=data)
+        label_id, found = self.label_inc_library.find_or_insert(new_data=data)
     else:
         raise ValueError("Unsupported label type passed to register_label_event()")
 
-    self.blocks.clear()
+    # Clear block cache because label event was overwritten
+    # TODO: Could find only the blocks that are affected by the changes
+    if self.use_block_cache and found:
+        self.block_cache.clear()
 
     return label_id
 
@@ -603,12 +621,12 @@ def register_rf_event(self, event: SimpleNamespace) -> Tuple[int, List[int]]:
         shape_IDs = [0, 0, 0]
 
         mag_shape = compress_shape(mag)
-        data = np.insert(mag_shape.data, 0, mag_shape.num_samples)
+        data = np.concatenate(([mag_shape.num_samples], mag_shape.data))
         shape_IDs[0], found = self.shape_library.find_or_insert(data)
         may_exist = may_exist & found
 
         phase_shape = compress_shape(phase)
-        data = np.insert(phase_shape.data, 0, phase_shape.num_samples)
+        data = np.concatenate(([phase_shape.num_samples], phase_shape.data))
         shape_IDs[1], found = self.shape_library.find_or_insert(data)
         may_exist = may_exist & found
 
@@ -642,10 +660,15 @@ def register_rf_event(self, event: SimpleNamespace) -> Tuple[int, List[int]]:
     )
 
     if may_exist:
-        rf_id, _ = self.rf_library.find_or_insert(new_data=data, data_type=use)
+        rf_id, found = self.rf_library.find_or_insert(new_data=data, data_type=use)
+        
+        # Clear block cache because RF event was overwritten
+        # TODO: Could find only the blocks that are affected by the changes
+        if self.use_block_cache and found:
+            self.block_cache.clear()
     else:
         rf_id = self.rf_library.insert(key_id=0, new_data=data, data_type=use)
 
-    self.blocks.clear()
+    
 
     return rf_id, shape_IDs

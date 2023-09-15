@@ -1,4 +1,4 @@
-from copy import deepcopy
+from copy import copy, deepcopy
 from types import SimpleNamespace
 from typing import Iterable
 
@@ -9,9 +9,10 @@ from pypulseq.calc_duration import calc_duration
 from pypulseq.make_arbitrary_grad import make_arbitrary_grad
 from pypulseq.make_trapezoid import make_trapezoid
 from pypulseq.make_extended_trapezoid import make_extended_trapezoid
+from pypulseq.make_trapezoid import make_trapezoid
 from pypulseq.opts import Opts
 from pypulseq.points_to_waveform import points_to_waveform
-
+from pypulseq.utils.cumsum import cumsum
 
 def add_gradients(
     grads: Iterable[SimpleNamespace],
@@ -37,10 +38,7 @@ def add_gradients(
     -------
     grad : SimpleNamespace
         Superimposition of gradient events from `grads`.
-    """    
-    # copy() to emulate pass-by-value; otherwise passed grad events are modified
-    # grads = deepcopy(grads)
-
+    """
     if max_grad <= 0:
         max_grad = system.max_grad
     if max_slew <= 0:
@@ -49,19 +47,17 @@ def add_gradients(
     if len(grads) == 0:
         raise ValueError("No gradients specified")
     if len(grads) == 1:
-        # TODO: Technically this should copy the gradient
-        return grads[0]
+        # Trapezoids only require a shallow copy
+        if grads[0].type == 'trap':
+            return copy(grads[0])
+        else:
+            return deepcopy(grads[0])
     
     # First gradient defines channel
     channel = grads[0].channel
 
     # Check if we have a set of traps with the same timing
     if all(g.type == 'trap' for g in grads):
-        # cond1 = 1 == len(np.unique([g.delay for g in grads]))
-        # cond2 = 1 == len(np.unique([g.rise_time for g in grads]))
-        # cond3 = 1 == len(np.unique([g.flat_time for g in grads]))
-        # cond4 = 1 == len(np.unique([g.fall_time for g in grads]))
-        
         cond1 = all(g.delay == grads[0].delay for g in grads)
         cond2 = all(g.rise_time == grads[0].rise_time for g in grads)
         cond3 = all(g.flat_time == grads[0].flat_time for g in grads)
@@ -75,19 +71,6 @@ def add_gradients(
                                   fall_time=grads[0].fall_time,
                                   delay=grads[0].delay,
                                   system=system)
-            # grad = deepcopy(grads[0])
-            # grad.amplitude = sum(g.amplitude for g in grads)
-            # grad.area = sum(g.area for g in grads)
-            # grad.flat_area = sum(g.flat_area for g in grads)
-            
-            # if np.abs(grad.amplitude) > max_grad:
-            #     raise ValueError(f"Amplitude violation: {np.abs(grad.amplitude)} > {max_grad}")
-
-            # if np.abs(grad.amplitude)/grad.rise_time > max_slew:
-            #     raise ValueError(f"Slew rate violation (rise): {np.abs(grad.amplitude)/grad.rise_time} > {max_slew}")
-            # if np.abs(grad.amplitude)/grad.fall_time > max_slew:
-            #     raise ValueError(f"Slew rate violation (fall): {np.abs(grad.amplitude)/grad.fall_time} > {max_slew}")
-
     
     # Find out the general delay of all gradients and other statistics
     delays, firsts, lasts, durs, is_trap, is_arb = [], [], [], [], [], []
@@ -106,9 +89,6 @@ def add_gradients(
             tt_rast = grads[ii].tt / system.grad_raster_time - 0.5
             is_arb.append(np.all(np.abs(tt_rast - np.arange(len(tt_rast)))) < eps)
 
-
-
-
     # Check if we only have arbitrary grads on irregular time samplings, optionally mixed with trapezoids
     if np.all(np.logical_or(is_trap, np.logical_not(is_arb))):
         # Keep shapes still rather simple
@@ -117,14 +97,13 @@ def add_gradients(
             g = grads[ii]
             if g.type == "trap":
                 times.extend(
-                    np.cumsum([g.delay, g.rise_time, g.flat_time, g.fall_time])
+                    cumsum(g.delay, g.rise_time, g.flat_time, g.fall_time)
                 )
             else:
                 times.extend(g.delay + g.tt)
 
         times = np.sort(np.unique(times))
         dt = times[1:] - times[:-1]
-
         ieps = np.flatnonzero(dt < eps)
         if np.any(ieps):
             dtx = np.array([times[0], *dt])
@@ -139,13 +118,15 @@ def add_gradients(
             g = grads[ii]
             if g.type == "trap":
                 if g.flat_time > 0:  # Trapezoid or triangle
-                    g.tt = np.cumsum([0, g.rise_time, g.flat_time, g.fall_time])
-                    g.waveform = [0, g.amplitude, g.amplitude, 0]
+                    tt = list(cumsum(g.delay, g.rise_time, g.flat_time, g.fall_time))
+                    waveform = [0, g.amplitude, g.amplitude, 0]
                 else:
-                    g.tt = np.cumsum([0, g.rise_time, g.fall_time])
-                    g.waveform = [0, g.amplitude, 0]
+                    tt = list(cumsum(g.delay, g.rise_time, g.fall_time))
+                    waveform = [0, g.amplitude, 0]
+            else:
+                tt = g.delay + g.tt
+                waveform = g.waveform
 
-            tt = g.delay + g.tt
             # Fix rounding for the first and last time points
             i_min = np.argmin(np.abs(tt[0] - times))
             t_min = (np.abs(tt[0] - times))[i_min]
@@ -156,10 +137,10 @@ def add_gradients(
             if t_min < eps:
                 tt[-1] = times[i_min]
 
-            if np.abs(g.waveform[0]) > eps and tt[0] > eps:
+            if abs(waveform[0]) > eps and tt[0] > eps:
                 tt[0] += eps
 
-            amplitudes += np.interp(xp=tt, fp=g.waveform, x=times)
+            amplitudes += np.interp(xp=tt, fp=waveform, x=times)
 
         grad = make_extended_trapezoid(
             channel=channel, amplitudes=amplitudes, times=times, system=system
@@ -221,7 +202,7 @@ def add_gradients(
             # Stop for numpy.arange is not g.delay - common_delay - system.grad_raster_time like in Matlab
             # so as to include the endpoint
             t_delay = np.arange(0, g.delay - common_delay, step=system.grad_raster_time)
-            waveforms[ii] = np.insert(waveforms[ii], 0, t_delay)
+            waveforms[ii] = np.concatenate(([t_delay], waveforms[ii]))
 
         num_points = len(waveforms[ii])
         max_length = max(num_points, max_length)
@@ -242,7 +223,7 @@ def add_gradients(
     )
     # Fix the first and the last values
     # First is defined by the sum of firsts with the minimal delay (common_delay)
-    # Last is defined by the sum of lasts with the maximum duration (total_duration)
+    # Last is defined by the sum of lasts with the maximum duration (total_duration == durs.max())
     grad.first = np.sum(firsts[np.array(delays) == common_delay])
     grad.last = np.sum(lasts[durs == durs.max()])
 

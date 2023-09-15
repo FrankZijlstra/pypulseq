@@ -73,7 +73,7 @@ def check_timing(system: Opts, *events: SimpleNamespace) -> Tuple[bool, str, flo
         if hasattr(e, "dwell"):
             if (
                 e.dwell < system.adc_raster_time
-                or np.abs(
+                or abs(
                     round(e.dwell / system.adc_raster_time) * system.adc_raster_time
                     - e.dwell
                 )

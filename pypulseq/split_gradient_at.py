@@ -49,15 +49,15 @@ def split_gradient_at(
 
     grad_raster_time = system.grad_raster_time
 
-    time_index = np.round(time_point / grad_raster_time)
+    time_index = round(time_point / grad_raster_time)
     # Work around floating-point arithmetic limitation
-    time_point = np.round(time_index * grad_raster_time, 6)
+    time_point = round(time_index * grad_raster_time, 6)
     channel = grad.channel
 
     if grad.type == "grad":
         # Check if we have an arbitrary gradient or an extended trapezoid
-        if np.abs(grad.tt[-1] - 0.5 * grad_raster_time) < 1e-10 and np.all(
-            np.abs(grad.tt[1:] - grad.tt[:-1] - grad_raster_time) < 1e-10
+        if abs(grad.tt[-1] - 0.5 * grad_raster_time) < 1e-10 and np.all(
+            abs(grad.tt[1:] - grad.tt[:-1] - grad_raster_time) < 1e-10
         ):
             # Arbitrary gradient -- trivial conversion
             # If time point is out of range we have nothing to do
@@ -81,10 +81,10 @@ def split_gradient_at(
             times = grad.tt
             amplitudes = grad.waveform
     elif grad.type == "trap":
-        grad.delay = np.round(grad.delay / grad_raster_time) * grad_raster_time
-        grad.rise_time = np.round(grad.rise_time / grad_raster_time) * grad_raster_time
-        grad.flat_time = np.round(grad.flat_time / grad_raster_time) * grad_raster_time
-        grad.fall_time = np.round(grad.fall_time / grad_raster_time) * grad_raster_time
+        grad.delay = round(grad.delay / grad_raster_time) * grad_raster_time
+        grad.rise_time = round(grad.rise_time / grad_raster_time) * grad_raster_time
+        grad.flat_time = round(grad.flat_time / grad_raster_time) * grad_raster_time
+        grad.fall_time = round(grad.fall_time / grad_raster_time) * grad_raster_time
 
         # Prepare the extended trapezoid structure
         if grad.flat_time == 0:
@@ -109,7 +109,7 @@ def split_gradient_at(
 
     # If the split line goes through the delay
     if time_point < grad.delay:
-        times = np.insert(grad.delay + times, 0, 0)
+        times = np.concatenate(([0], grad.delay + times))
         amplitudes = [0, amplitudes]
         grad.delay = 0
     else:
@@ -121,10 +121,10 @@ def split_gradient_at(
     # Sample at time point
     amp_tp = np.interp(x=time_point, xp=times, fp=amplitudes)
     t_eps = 1e-10
-    times1 = np.append(times[np.where(times < time_point - t_eps)], time_point)
-    amplitudes1 = np.append(amplitudes[np.where(times < time_point - t_eps)], amp_tp)
-    times2 = np.insert(times[times > time_point + t_eps], 0, time_point) - time_point
-    amplitudes2 = np.insert(amplitudes[times > time_point + t_eps], 0, amp_tp)
+    times1 = np.concatenate((times[np.where(times < time_point - t_eps)], [time_point]))
+    amplitudes1 = np.concatenate((amplitudes[np.where(times < time_point - t_eps)], [amp_tp]))
+    times2 = np.concatenate(([time_point], times[times > time_point + t_eps])) - time_point
+    amplitudes2 = np.concatenate(([amp_tp], amplitudes[times > time_point + t_eps]))
 
     # Recreate gradients
     grad1 = make_extended_trapezoid(

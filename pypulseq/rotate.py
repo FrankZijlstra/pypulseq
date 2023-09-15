@@ -10,7 +10,7 @@ from pypulseq.opts import Opts
 
 def __get_grad_abs_mag(grad: SimpleNamespace) -> np.ndarray:
     if grad.type == "trap":
-        return np.abs(grad.amplitude)
+        return abs(grad.amplitude)
     return np.max(np.abs(grad.waveform))
 
 

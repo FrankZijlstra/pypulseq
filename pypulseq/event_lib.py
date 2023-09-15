@@ -4,15 +4,6 @@ from typing import Tuple
 import numpy as np
 
 
-def make_key(new_data):
-    # data_string = np.array2string(
-    #     new_data, formatter={"float": lambda x: f"{x:.6g}"}
-    # )
-    # data_string = data_string.replace("[", "")
-    # data_string = data_string.replace("]", "")
-    # return data_string
-    return tuple(new_data)
-
 class EventLibrary:
     """
     Defines an event library ot maintain a list of events. Provides methods to insert new data and find existing data.
@@ -75,15 +66,10 @@ class EventLibrary:
         found : bool
             If `new_data` was found in the event library or not.
         """
-        # new_data = np.array(new_data)
-        data_string = make_key(new_data)
-        # data_string = np.array2string(
-        #     new_data, formatter={"float": lambda x: f"{x:.6g}"}
-        # )
-        # data_string = data_string.replace("[", "")
-        # data_string = data_string.replace("]", "")
-        if data_string in self.keymap:
-            key_id = self.keymap[data_string]
+        key = tuple(new_data)
+
+        if key in self.keymap:
+            key_id = self.keymap[key]
             found = True
         else:
             key_id = 1 if len(self.keys) == 0 else self.next_free_ID
@@ -116,11 +102,10 @@ class EventLibrary:
         """
         if not isinstance(new_data, np.ndarray):
             new_data = np.array(new_data)
-        # data_string = new_data.tobytes()
-        data_string = make_key(new_data)
-        
-        if data_string in self.keymap:
-            key_id = self.keymap[data_string]
+        key = tuple(new_data)
+
+        if key in self.keymap:
+            key_id = self.keymap[key]
             found = True
         else:
             key_id = self.next_free_ID
@@ -134,7 +119,7 @@ class EventLibrary:
             if data_type != str():
                 self.type[key_id] = data_type
 
-            self.keymap[data_string] = key_id
+            self.keymap[key] = key_id
             self.next_free_ID = key_id + 1  # Update next_free_id
 
         return key_id, found
@@ -172,16 +157,11 @@ class EventLibrary:
         if data_type != str():
             self.type[key_id] = data_type
 
-        data_string = make_key(new_data)
-        # data_string = np.array2string(
-        #     new_data, formatter={"float_kind": lambda x: "%.6g" % x}
-        # )
-        # data_string = data_string.replace("[", "")
-        # data_string = data_string.replace("]", "")
-        self.keymap[data_string] = key_id
+        key = tuple(new_data)
+        self.keymap[key] = key_id
 
         if key_id >= self.next_free_ID:
-            self.next_free_ID += 1  # Update next_free_id
+            self.next_free_ID = key_id + 1  # Update next_free_id
 
         return key_id
 
@@ -241,13 +221,8 @@ class EventLibrary:
         data_type : str, default=str()
         """
         if len(self.keys) >= key_id:
-            data_string = make_key(old_data)
-            # data_string = np.array2string(
-            #     old_data, formatter={"float_kind": lambda x: "%.6g" % x}
-            # )
-            # data_string = data_string.replace("[", "")
-            # data_string = data_string.replace("]", "")
-            del self.keymap[data_string]
+            key = tuple(old_data)
+            del self.keymap[key]
 
         self.insert(key_id, new_data, data_type)
 
