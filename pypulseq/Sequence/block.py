@@ -518,12 +518,11 @@ def register_grad_event(
             may_exist = may_exist & found
             any_changed = any_changed or found
 
-            c_time = compress_shape(event.tt / self.grad_raster_time)
+            tt_regular = (abs(event.tt[0]/self.grad_raster_time - 0.5) < 1e-10
+                          and (np.diff(np.floor(event.tt/self.grad_raster_time)) == 1).all())
 
-            if not (
-                len(c_time.data) == 4
-                and np.all(c_time.data == [0.5, 1, 1, c_time.num_samples - 3])
-            ):
+            if not tt_regular:
+                c_time = compress_shape(event.tt / self.grad_raster_time)
                 t_data = np.concatenate(([c_time.num_samples], c_time.data))
                 shape_IDs[1], found = self.shape_library.find_or_insert(t_data)
                 may_exist = may_exist & found
