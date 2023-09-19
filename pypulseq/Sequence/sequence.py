@@ -340,18 +340,33 @@ class Sequence:
             tc.extend(gm_pp[i].x)
             # "Sample" ramps for display purposes otherwise piecewise-linear display (plot) fails
             ii = np.flatnonzero(np.abs(gm_pp[i].c[0, :]) > eps)
-            if len(ii) > 0:
-                for j in range(len(ii)):
-                    res = (
-                        np.arange(
-                            np.floor(float(gm_pp[i].x[ii[j]] / self.grad_raster_time)),
-                            np.ceil(
-                                (gm_pp[i].x[ii[j] + 1] / self.grad_raster_time) + 1
-                            ),
-                        )
-                        * self.grad_raster_time
-                    )
-                    tc.extend(res)
+                        
+            all_inds = np.arange(np.ceil(gm_pp[i].x[-1] / self.grad_raster_time))
+            starts = np.int64(np.floor(gm_pp[i].x / self.grad_raster_time))
+            ends = np.int64(np.ceil(gm_pp[i].x / self.grad_raster_time))
+
+            mask = np.zeros(all_inds.shape[0]+1)
+            np.add.at(mask, starts[ii], 1)
+            np.subtract.at(mask, ends[ii+1]+1, 1)
+            
+            mask = np.cumsum(mask) > 0
+            mask = mask[:-1]
+
+            tc.extend(all_inds[mask] * self.grad_raster_time)
+            
+            # tc = []
+            # if len(ii) > 0:
+            #     for j in range(len(ii)):
+            #         res = (
+            #             np.arange(
+            #                 np.floor(float(gm_pp[i].x[ii[j]] / self.grad_raster_time)),
+            #                 np.ceil(
+            #                     (gm_pp[i].x[ii[j] + 1] / self.grad_raster_time) + 1
+            #                 ),
+            #             )
+            #             * self.grad_raster_time
+            #         )
+            #         tc.extend(res)
         tc = np.array(tc)
 
         t_acc = 1e-10  # Temporal accuracy
@@ -657,19 +672,35 @@ class Sequence:
             gm_pp.append(gw_pp[i].antiderivative())
             tc.extend(gm_pp[i].x)
             # "Sample" ramps for display purposes otherwise piecewise-linear display (plot) fails
-            ii = np.nonzero(np.abs(gm_pp[i].c[0, :]) > eps)[0]
-            if len(ii) > 0:
-                for j in range(len(ii)):
-                    res = (
-                        np.arange(
-                            math.floor(float(gm_pp[i].x[ii[j]] / self.grad_raster_time)),
-                            math.ceil(
-                                (gm_pp[i].x[ii[j] + 1] / self.grad_raster_time) + 1
-                            ),
-                        )
-                        * self.grad_raster_time
-                    )
-                    tc.extend(res)
+            
+            ii = np.flatnonzero(np.abs(gm_pp[i].c[0, :]) > eps)
+                        
+            all_inds = np.arange(np.ceil(gm_pp[i].x[-1] / self.grad_raster_time))
+            starts = np.int64(np.floor(gm_pp[i].x / self.grad_raster_time))
+            ends = np.int64(np.ceil(gm_pp[i].x / self.grad_raster_time))
+
+            mask = np.zeros(all_inds.shape[0]+2)
+            np.add.at(mask, starts[ii], 1)
+            np.subtract.at(mask, ends[ii+1]+1, 1)
+            
+            mask = np.cumsum(mask) > 0
+            mask = mask[:-2]
+
+            tc.extend(all_inds[mask] * self.grad_raster_time)
+            
+            # ii = np.nonzero(np.abs(gm_pp[i].c[0, :]) > eps)[0]
+            # if len(ii) > 0:
+            #     for j in range(len(ii)):
+            #         res = (
+            #             np.arange(
+            #                 math.floor(float(gm_pp[i].x[ii[j]] / self.grad_raster_time)),
+            #                 math.ceil(
+            #                     (gm_pp[i].x[ii[j] + 1] / self.grad_raster_time) + 1
+            #                 ),
+            #             )
+            #             * self.grad_raster_time
+            #         )
+            #         tc.extend(res)
         tc = np.array(tc)
 
         if len(tfp_excitation) == 0:
@@ -1274,7 +1305,7 @@ class Sequence:
                         if grad.type == "grad":
                             # We extend the shape by adding the first and the last points in an effort of making the
                             # display a bit less confusing...
-                            time = grad.delay + [0, *grad.tt, grad.shape_dur]
+                            time = grad.delay + np.array([0, *grad.tt, grad.shape_dur])
                             waveform = g_factor * np.array(
                                 (grad.first, *grad.waveform, grad.last)
                             )
