@@ -19,13 +19,15 @@ def calc_duration(*args: SimpleNamespace) -> float:
     duration : float
         Cumulative duration of `args`.
     """
-    events = block_to_events(*args)
 
     duration = 0
-    for event in events:
+    for event in args:
         if isinstance(event, (float, int)):  # block_duration field
             assert duration <= event
             duration = event
+            continue
+        
+        if isinstance(event, dict): # Label field, ignore
             continue
 
         if not isinstance(event, (dict, SimpleNamespace)):
