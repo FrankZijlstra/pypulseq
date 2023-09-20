@@ -27,6 +27,7 @@ from pypulseq.opts import Opts
 from pypulseq.supported_labels_rf_use import get_supported_labels
 from pypulseq.utils.ppoly import ppoly_nth_moment, ppoly_split
 from pypulseq.utils.cumsum import cumsum
+from pypulseq.block_to_events import block_to_events
 
 from version import major, minor, revision
 
@@ -60,7 +61,7 @@ class Sequence:
             EventLibrary()
         )  # Library of Label(set) events (reference from the extensions library)
         self.rf_library = EventLibrary()  # Library of RF events
-        self.shape_library = EventLibrary()  # Library of compressed shapes
+        self.shape_library = EventLibrary(numpy_data=True)  # Library of compressed shapes
         self.trigger_library = EventLibrary()  # Library of trigger events
 
         # =========
@@ -712,7 +713,7 @@ class Sequence:
 
         for block_counter in range(num_blocks):
             block = self.get_block(block_counter + 1)
-            events = [e for e in vars(block).values() if e is not None]
+            events = block_to_events(block)
             res, rep, duration = ext_check_timing(self.system, *events)
             is_ok = is_ok and res
 
