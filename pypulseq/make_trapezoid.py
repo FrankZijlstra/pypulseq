@@ -194,7 +194,11 @@ def make_trapezoid(
 
     if abs(amplitude2) > max_grad:
         raise ValueError("Amplitude violation.")
-
+    if abs(amplitude2) / rise_time > max_slew:
+        raise ValueError(f"Slew rate violation on rise. {abs(amplitude2) / rise_time} > {max_slew}")
+    if abs(amplitude2) / fall_time > max_slew:
+        raise ValueError(f"Slew rate violation on fall. {abs(amplitude2) / fall_time} > {max_slew}")
+        
     grad = SimpleNamespace()
     grad.type = "trap"
     grad.channel = channel

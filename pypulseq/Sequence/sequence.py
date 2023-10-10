@@ -95,6 +95,8 @@ class Sequence:
         self.block_durations = []  # Cache of block durations
         self.extension_numeric_idx = []  # numeric IDs of the used extensions
         self.extension_string_idx = []  # string IDs of the used extensions
+        
+        self.top_comment = None
 
     def __str__(self) -> str:
         s = "Sequence:"
@@ -405,7 +407,7 @@ class Sequence:
         
         
 
-    def calculate_kspacePP(
+    def calculate_kspace(
         self,
         trajectory_delay: Union[int, float, np.ndarray] = 0,
         gradient_offset: int = 0,

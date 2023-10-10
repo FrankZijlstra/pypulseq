@@ -28,6 +28,11 @@ def write(self, file_name: str, create_signature) -> None:
     with open(file_name, "w") as output_file:
         output_file.write("# Pulseq sequence file\n")
         output_file.write("# Created by PyPulseq\n\n")
+        
+        if self.top_comment != None:
+            for line in self.top_comment.splitlines():
+                    output_file.write(f"# {line}\n")
+        
 
         output_file.write("[VERSION]\n")
         output_file.write(f"major {self.version_major}\n")
