@@ -269,11 +269,11 @@ def get_block(self, block_index: int) -> SimpleNamespace:
         setattr(block, att, val)
     event_ind = self.block_events[block_index]
 
-    if event_ind[0] > 0:  # Delay
-        delay = SimpleNamespace()
-        delay.type = "delay"
-        delay.delay = self.delay_library.data[event_ind[0]][0]
-        block.delay = delay
+    # if event_ind[0] > 0:  # Delay
+    #     delay = SimpleNamespace()
+    #     delay.type = "delay"
+    #     delay.delay = self.delay_library.data[event_ind[0]][0]
+    #     block.delay = delay
 
     if event_ind[1] > 0:  # RF
         if event_ind[1] in self.rf_library.type:
