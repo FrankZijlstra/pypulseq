@@ -49,19 +49,19 @@ class Sequence:
         # =========
         # EVENT LIBRARIES
         # =========
-        self.adc_library = EventLibrary()  # Library of ADC events
-        self.delay_library = EventLibrary()  # Library of delay events
+        self.adc_library = EventLibrary(precision=[0, 9, 6, 6, 6, 6])  # Library of ADC events
+        # self.delay_library = EventLibrary()  # Library of delay events
         # Library of extension events. Extension events form single-linked zero-terminated lists
         self.extensions_library = EventLibrary()
-        self.grad_library = EventLibrary()  # Library of gradient events
+        self.grad_library = EventLibrary(precision=[6, 6, 6, 6, 6, 6])  # Library of gradient events
         self.label_inc_library = (
             EventLibrary()
         )  # Library of Label(inc) events (reference from the extensions library)
         self.label_set_library = (
             EventLibrary()
         )  # Library of Label(set) events (reference from the extensions library)
-        self.rf_library = EventLibrary()  # Library of RF events
-        self.shape_library = EventLibrary(numpy_data=True)  # Library of compressed shapes
+        self.rf_library = EventLibrary(precision=[12, 0, 0, 0, 6, 6, 6])  # Library of RF events
+        self.shape_library = EventLibrary(numpy_data=True, precision=12)  # Library of compressed shapes
         self.trigger_library = EventLibrary()  # Library of trigger events
 
         # =========

@@ -2,7 +2,17 @@ from types import SimpleNamespace
 from typing import Tuple
 
 import numpy as np
+import math
 
+
+def round_data(data, digits):   
+    return tuple(round(d, dig - int(math.ceil(math.log10(abs(d) + 1e-12))) if dig > 0 else 0) for d, dig in zip(data, digits))
+
+def round_data_numpy(data, digits):   
+    mags = 10 ** (digits - (np.ceil(np.log10(abs(data) + 1e-12))) if digits > 0 else 0)
+    result = np.round(data * mags) / mags
+    result.flags.writeable = False
+    return result
 
 class EventLibrary:
     """
@@ -28,10 +38,11 @@ class EventLibrary:
         Key-value pairs of data values and corresponding event keys.
     """
 
-    def __init__(self, numpy_data=False):
+    def __init__(self, numpy_data=False, precision=None):
         self.data = dict()
         self.type = dict()
         self.keymap = dict()
+        self.precision = precision
         self.next_free_ID = 1
         self.numpy_data = numpy_data
 
@@ -59,8 +70,13 @@ class EventLibrary:
         """
         if self.numpy_data:
             new_data = np.asarray(new_data)
+            if self.precision is not None:
+                new_data = round_data_numpy(new_data, self.precision)
+                
             key = new_data.tobytes()
         else:
+            if self.precision is not None:
+                new_data = round_data(tuple(new_data), self.precision)
             key = tuple(new_data)
 
         if key in self.keymap:
@@ -98,9 +114,13 @@ class EventLibrary:
         
         if self.numpy_data:
             new_data = np.asarray(new_data)
+            if self.precision is not None:
+                new_data = round_data_numpy(new_data, self.precision)
             new_data.flags.writeable = False
             key = new_data.tobytes()
         else:
+            if self.precision is not None:
+                new_data = round_data(tuple(new_data), self.precision)
             key = tuple(new_data)
 
         if key in self.keymap:
@@ -149,9 +169,13 @@ class EventLibrary:
 
         if self.numpy_data:
             new_data = np.asarray(new_data)
+            if self.precision is not None:
+                new_data = round_data_numpy(new_data, self.precision)
             new_data.flags.writeable = False
             key = new_data.tobytes()
         else:
+            if self.precision is not None:
+                new_data = round_data(tuple(new_data), self.precision)
             key = tuple(new_data)
         
         self.data[key_id] = new_data
